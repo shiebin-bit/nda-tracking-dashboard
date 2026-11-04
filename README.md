@@ -323,6 +323,12 @@ See the [Developer Guide](docs/DEVELOPMENT.md) for creating and removing that da
 
 Coverage includes date/milestone boundaries, Excel safety and duplicate handling, version conflicts, atomic renewal, follow-up notes, email scheduling and uncertain outcomes, document job recovery, signed-file validation and confirmation, and recycle-bin restoration.
 
+Local publication checks on **4 November 2026** passed: **109 unit tests**, **40 PostgreSQL integration tests**, client/server production compilation, and both application/backup Docker image builds.
+
+### Dependency status
+
+On the same date, `npm audit --omit=dev` reported **8 moderate advisories**, with no high or critical advisories, in ExcelJS and its archive/glob dependency chain. They remain open; this publication does not change dependency versions. Review the current audit and compatibility impact before a broader deployment. A passing build or CI result is not a dependency-security clearance.
+
 ## CI
 
 [ci.yml](.github/workflows/ci.yml) runs unit tests, PostgreSQL integration tests, the client/server build, and both Docker image builds for pushes and pull requests targeting `main`. It uses a disposable PostgreSQL service and no Brevo credentials. PDF conversion in store integration tests uses a local test service; CI does not claim a full visual LibreOffice or physical printing check.
