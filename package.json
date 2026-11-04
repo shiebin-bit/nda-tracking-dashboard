@@ -1,0 +1,56 @@
+{
+  "name": "nda-tracking-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Contract preparation and NDA tracking workspace with versioned Word/PDF generation, signed copies, Excel workflows and Brevo reminders.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shiebin-bit/nda-tracking-dashboard.git"
+  },
+  "homepage": "https://github.com/shiebin-bit/nda-tracking-dashboard#readme",
+  "bugs": {
+    "url": "https://github.com/shiebin-bit/nda-tracking-dashboard/issues"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:server": "tsx watch server/index.ts",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "tsc -b && vite build",
+    "build:server": "tsc -p tsconfig.server.json",
+    "start": "node dist/server/server/index.js",
+    "db:import-xlsx": "node dist/server/server/import-xlsx.js",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "docxtemplater": "^3.71.1",
+    "exceljs": "4.4.0",
+    "lucide-react": "0.468.0",
+    "pg": "^8.23.1",
+    "pizzip": "^3.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "yazl": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/busboy": "^1.5.5",
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/yazl": "^3.3.1",
+    "@vitejs/plugin-react": "6.1.2",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3",
+    "vite": "8.3.4",
+    "vitest": "5.0.4"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
+  }
+}

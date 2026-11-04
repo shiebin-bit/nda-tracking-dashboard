@@ -1,0 +1,15 @@
+.pdf-preview{margin:16px 0 10px;min-width:0}
+.pdf-preview-mode{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:38px;padding:6px 10px;border:1px solid var(--border);border-bottom:0;background:#f7f8f5;font-size:11px;color:var(--muted)}
+.pdf-preview-mode .text-button{font-size:11px;font-weight:600;white-space:nowrap;min-height:28px}
+.pdf-preview-surface{position:relative}
+.pdf-preview .contract-pdf,.pdf-preview .signed-upload-preview,.pdf-preview .signed-confirm-preview{margin:0}
+.pdf-preview iframe{pointer-events:none}
+.pdf-preview.is-reading iframe{pointer-events:auto}
+.pdf-preview-activate{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:center;width:100%;border:0;padding:16px;background:transparent;cursor:pointer;color:var(--text);touch-action:pan-y}
+.pdf-preview-activate>span{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;column-gap:8px;row-gap:6px;padding:12px 16px;border:1px solid var(--border);border-radius:3px;background:#fff;box-shadow:0 2px 12px #0002;font-size:12px;line-height:1.5;pointer-events:none}
+.pdf-preview-activate small{width:100%;font-size:10px;color:var(--muted)}
+.pdf-preview-activate:hover>span{border-color:var(--teal)}
+.pdf-preview-activate:focus-visible{outline:3px solid var(--teal);outline-offset:-3px}
+.pdf-preview-hint{display:flex;align-items:flex-start;gap:6px;margin:8px 0 0;font-size:10px;line-height:1.6;color:var(--muted)}
+.pdf-preview-hint svg{flex-shrink:0;margin-top:2px}
+@media(max-width:700px){.pdf-preview-mode{padding:6px 8px;gap:8px}.pdf-preview-activate{padding:12px}.pdf-preview-hint{font-size:10px}}

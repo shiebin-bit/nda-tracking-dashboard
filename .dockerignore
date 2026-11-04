@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+node_modules
+dist
+coverage
+backups
+work
+*.log
+.DS_Store
+.playwright-cli
+
+output

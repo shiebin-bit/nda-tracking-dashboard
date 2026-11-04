@@ -1,0 +1,478 @@
+{
+  "template": "ffm-nda-v1",
+  "source": "Privately supplied FFM NDA master document (not distributed)",
+  "source_sha256": "a36ee7ad81071c67006568186f105bff6ae6a4d2c3dfaafbe63579cffe359512",
+  "output": "templates/ffm-nda-v1.docx",
+  "tag_syntax": "flat-docxtemplater",
+  "tags": [
+    "discloser_name",
+    "discloser_registration",
+    "discloser_address",
+    "discloser_contact_name",
+    "discloser_contact_designation",
+    "discloser_contact_address",
+    "discloser_contact_email",
+    "discloser_signatory_name",
+    "discloser_signatory_designation",
+    "discloser_witness_name",
+    "discloser_witness_designation",
+    "recipient_name",
+    "recipient_registration",
+    "recipient_address",
+    "recipient_contact_name",
+    "recipient_contact_designation",
+    "recipient_contact_address",
+    "recipient_contact_email",
+    "recipient_signatory_name",
+    "recipient_signatory_designation",
+    "recipient_witness_name",
+    "recipient_witness_designation",
+    "purpose",
+    "agreement_date",
+    "duration_text"
+  ],
+  "tag_counts": {
+    "discloser_name": 3,
+    "discloser_registration": 3,
+    "discloser_address": 1,
+    "discloser_contact_name": 1,
+    "discloser_contact_designation": 1,
+    "discloser_contact_address": 1,
+    "discloser_contact_email": 1,
+    "discloser_signatory_name": 1,
+    "discloser_signatory_designation": 1,
+    "discloser_witness_name": 1,
+    "discloser_witness_designation": 1,
+    "recipient_name": 3,
+    "recipient_registration": 3,
+    "recipient_address": 1,
+    "recipient_contact_name": 1,
+    "recipient_contact_designation": 1,
+    "recipient_contact_address": 1,
+    "recipient_contact_email": 1,
+    "recipient_signatory_name": 1,
+    "recipient_signatory_designation": 1,
+    "recipient_witness_name": 1,
+    "recipient_witness_designation": 1,
+    "purpose": 2,
+    "agreement_date": 1,
+    "duration_text": 1
+  },
+  "locations": {
+    "discloser_name": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 5,
+        "xml_path": "/w:document/w:body/w:tbl[1]/w:tr[1]/w:tc[2]/w:p[1]"
+      },
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 252,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[3]/w:tc[4]/w:p[1]"
+      },
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 296,
+        "xml_path": "/w:document/w:body/w:p[240]",
+        "note": "discloser signature"
+      }
+    ],
+    "discloser_registration": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 5,
+        "xml_path": "/w:document/w:body/w:tbl[1]/w:tr[1]/w:tc[2]/w:p[1]"
+      },
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 253,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[3]/w:tc[4]/w:p[2]"
+      },
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 297,
+        "xml_path": "/w:document/w:body/w:p[241]",
+        "note": "discloser signature"
+      }
+    ],
+    "recipient_name": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 8,
+        "xml_path": "/w:document/w:body/w:tbl[1]/w:tr[2]/w:tc[2]/w:p[1]"
+      },
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 258,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[4]/w:tc[4]/w:p[1]"
+      },
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 319,
+        "xml_path": "/w:document/w:body/w:p[262]",
+        "note": "recipient signature"
+      }
+    ],
+    "recipient_registration": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 9,
+        "xml_path": "/w:document/w:body/w:tbl[1]/w:tr[2]/w:tc[2]/w:p[2]"
+      },
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 259,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[4]/w:tc[4]/w:p[2]"
+      },
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 320,
+        "xml_path": "/w:document/w:body/w:p[263]",
+        "note": "recipient signature; source split across two paragraphs"
+      }
+    ],
+    "purpose": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 12,
+        "xml_path": "/w:document/w:body/w:tbl[1]/w:tr[3]/w:tc[2]/w:p",
+        "note": "cover purpose"
+      },
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 264,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[5]/w:tc[4]/w:p[1]",
+        "note": "schedule purpose"
+      }
+    ],
+    "agreement_date": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 247,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[2]/w:tc[4]/w:p[1]"
+      }
+    ],
+    "discloser_address": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 254,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[3]/w:tc[4]/w:p[3]"
+      }
+    ],
+    "recipient_address": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 260,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[4]/w:tc[4]/w:p[3]"
+      }
+    ],
+    "duration_text": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 269,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[6]/w:tc[4]/w:p[1]"
+      }
+    ],
+    "discloser_contact_name": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 275,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[7]/w:tc[4]/w:p[2]"
+      }
+    ],
+    "discloser_contact_designation": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 276,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[7]/w:tc[4]/w:p[3]"
+      }
+    ],
+    "discloser_contact_address": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 277,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[7]/w:tc[4]/w:p[4]"
+      }
+    ],
+    "discloser_contact_email": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 278,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[7]/w:tc[4]/w:p[5]"
+      }
+    ],
+    "recipient_contact_name": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 281,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[7]/w:tc[4]/w:p[8]"
+      }
+    ],
+    "recipient_contact_designation": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 282,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[7]/w:tc[4]/w:p[9]"
+      }
+    ],
+    "recipient_contact_address": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 283,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[7]/w:tc[4]/w:p[10]"
+      }
+    ],
+    "recipient_contact_email": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 284,
+        "xml_path": "/w:document/w:body/w:tbl[2]/w:tr[7]/w:tc[4]/w:p[11]"
+      }
+    ],
+    "discloser_signatory_name": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 299,
+        "xml_path": "/w:document/w:body/w:p[243]"
+      }
+    ],
+    "discloser_signatory_designation": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 300,
+        "xml_path": "/w:document/w:body/w:p[244]"
+      }
+    ],
+    "discloser_witness_name": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 308,
+        "xml_path": "/w:document/w:body/w:p[252]"
+      }
+    ],
+    "discloser_witness_designation": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 309,
+        "xml_path": "/w:document/w:body/w:p[253]",
+        "note": "discloser witness signature"
+      }
+    ],
+    "recipient_signatory_name": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 322,
+        "xml_path": "/w:document/w:body/w:p[265]"
+      }
+    ],
+    "recipient_signatory_designation": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 323,
+        "xml_path": "/w:document/w:body/w:p[266]"
+      }
+    ],
+    "recipient_witness_name": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 333,
+        "xml_path": "/w:document/w:body/w:p[276]"
+      }
+    ],
+    "recipient_witness_designation": [
+      {
+        "part": "word/document.xml",
+        "paragraph_index": 334,
+        "xml_path": "/w:document/w:body/w:p[277]"
+      }
+    ]
+  },
+  "source_metadata_removed": [
+    "customXml/_rels/item1.xml.rels",
+    "customXml/_rels/item2.xml.rels",
+    "customXml/_rels/item3.xml.rels",
+    "customXml/_rels/item4.xml.rels",
+    "customXml/_rels/item5.xml.rels",
+    "customXml/item1.xml",
+    "customXml/item2.xml",
+    "customXml/item3.xml",
+    "customXml/item4.xml",
+    "customXml/item5.xml",
+    "customXml/itemProps1.xml",
+    "customXml/itemProps2.xml",
+    "customXml/itemProps3.xml",
+    "customXml/itemProps4.xml",
+    "customXml/itemProps5.xml",
+    "docMetadata/LabelInfo.xml",
+    "docProps/custom.xml"
+  ],
+  "removed_hyperlink_relationship_ids": [
+    "rId13"
+  ],
+  "source_structure": {
+    "sections": 2,
+    "section_geometry": [
+      {
+        "pgSz": {
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w": "11909",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}h": "16834",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}code": "9"
+        },
+        "pgMar": {
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}top": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}right": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}bottom": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}left": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}header": "720",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}footer": "720",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}gutter": "0"
+        }
+      },
+      {
+        "pgSz": {
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w": "11909",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}h": "16834",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}code": "9"
+        },
+        "pgMar": {
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}top": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}right": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}bottom": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}left": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}header": "720",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}footer": "720",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}gutter": "0"
+        }
+      }
+    ],
+    "tables": 2,
+    "footers": [
+      "word/footer1.xml",
+      "word/footer2.xml"
+    ],
+    "page_numbering": [
+      {},
+      {
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}start": "1"
+      }
+    ],
+    "empty_paragraphs": 156,
+    "drawing_count": 0,
+    "bookmark_count": 8,
+    "bookmark_names": [
+      "_Hlk132705947",
+      "_Ref191890842",
+      "_Ref191890856",
+      "_Ref191891419",
+      "_Ref191893151",
+      "_Ref191896948",
+      "_Ref191897436",
+      "_Ref496611265"
+    ],
+    "instrText_count": 11,
+    "fldChar_count": 21,
+    "comments": 0,
+    "hyperlink_wrappers": 1
+  },
+  "output_structure": {
+    "sections": 2,
+    "section_geometry": [
+      {
+        "pgSz": {
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w": "11909",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}h": "16834",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}code": "9"
+        },
+        "pgMar": {
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}top": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}right": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}bottom": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}left": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}header": "720",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}footer": "720",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}gutter": "0"
+        }
+      },
+      {
+        "pgSz": {
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w": "11909",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}h": "16834",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}code": "9"
+        },
+        "pgMar": {
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}top": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}right": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}bottom": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}left": "1440",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}header": "720",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}footer": "720",
+          "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}gutter": "0"
+        }
+      }
+    ],
+    "tables": 2,
+    "footers": [
+      "word/footer1.xml",
+      "word/footer2.xml"
+    ],
+    "page_numbering": [
+      {},
+      {
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}start": "1"
+      }
+    ],
+    "empty_paragraphs": 155,
+    "drawing_count": 0,
+    "bookmark_count": 8,
+    "bookmark_names": [
+      "_Hlk132705947",
+      "_Ref191890842",
+      "_Ref191890856",
+      "_Ref191891419",
+      "_Ref191893151",
+      "_Ref191896948",
+      "_Ref191897436",
+      "_Ref496611265"
+    ],
+    "instrText_count": 11,
+    "fldChar_count": 21,
+    "comments": 0,
+    "hyperlink_wrappers": 0
+  },
+  "structural_checks": {
+    "sections_preserved": true,
+    "tables_preserved": true,
+    "section_geometry_preserved": true,
+    "page_numbering_preserved": true,
+    "empty_paragraphs_preserved_except_agreement_date_slot": true,
+    "drawings_preserved": true,
+    "bookmarks_preserved": true,
+    "ref_fields_preserved": true,
+    "field_characters_preserved": true,
+    "signature_stamps_and_blank_lines_structure_preserved": true,
+    "source_sample_values_remaining": []
+  },
+  "output_package_sha256_by_part": {
+    "[Content_Types].xml": "9c81ddb518d728c074586621d4a0643a452904a27d1f83412b9dfc3818d3a264",
+    "_rels/.rels": "a76c44cf6b278166bfc93edce0a98846be30e584462153ba97fa683469ff5916",
+    "docProps/app.xml": "172938cd1eb606ea57d79f817e11ff246d0686d76f348bf049cf133d933ba4d8",
+    "docProps/core.xml": "3efd57ea8b60121522e5b9a29a9e652314eae4bbd83c40459680a100f92b1a27",
+    "word/_rels/document.xml.rels": "4829cbd761c85cd54c22a1efb046b7d403177d88e1b5d6e9fbfe5dda11928adc",
+    "word/document.xml": "2febacb7c6be80974c44c26b75067b1586a50583f04b872abb85381c042e2b63",
+    "word/endnotes.xml": "03384cce34ac55ee5d79acaa0bf261589ae60c1eb65e1719dde9c101b210c639",
+    "word/fontTable.xml": "4db2bd5922fdcbb74385b8297b75852e410f6a685c121a6b1d11524718e1924d",
+    "word/footer1.xml": "cfa2fe2f25a0083596626f89cb853074f84bda84f06da1dd6ea95a7dcb85dc69",
+    "word/footer2.xml": "ae29476ff9de6dbd8cad6c30a4f1ce61e645f63aec7b7cb894651870709199f2",
+    "word/footnotes.xml": "089803581d01a963ac739679d4c5f895093134c164585284ea38f633a2ca86d1",
+    "word/numbering.xml": "53453cf72f3f0d3f7798331f506a3395c4ad33e80837f583419f12ac03c54d8b",
+    "word/settings.xml": "e61d24438b8e0dbd97b30849640e0f760d048febca49c46b521cb76151605602",
+    "word/styles.xml": "ad1e666901a2768cd07e8aaa08e58a0b8df267f82662a9fea84027f05e480621",
+    "word/theme/theme1.xml": "528355fa158defe686071a1587973c41cdba3057256df13b2f270f0d8f1896fc",
+    "word/webSettings.xml": "d0e0a51eee5d78fe7005bff035960674a2eb4cadae93880328eb0fa37598b6fe"
+  },
+  "remaining_visual_checks": [
+    "Render using the local Gotenberg converter and inspect every page after any template change.",
+    "Check cover, Schedule, repeated party details, signature/stamp areas, tables, cross-references and page numbering.",
+    "The Word page cache is not proof of the final PDF page count."
+  ]
+}

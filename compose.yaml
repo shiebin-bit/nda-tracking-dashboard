@@ -1,0 +1,91 @@
+name: nda-tracker
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: nda_tracker
+      POSTGRES_USER: nda_app
+      POSTGRES_PASSWORD: ${NDA_DB_PASSWORD:?NDA_DB_PASSWORD is required}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - nda_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nda_app -d nda_tracker"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://nda_app:${NDA_DB_PASSWORD}@db:5432/nda_tracker
+      NDA_PORT: ${NDA_PORT:-5183}
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-}
+      NDA_BACKUP_DIR: /backups/automatic
+      NDA_CONVERTER_URL: http://converter:3000
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${NDA_PORT:-5183}:3000"
+    volumes:
+      - ./backups/automatic:/backups/automatic:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - default
+      - documents
+  converter:
+    image: gotenberg/gotenberg:8.38.0-libreoffice
+    command:
+      - gotenberg
+      - --api-timeout=60s
+      - --api-body-limit=20MB
+      - --api-disable-download-from=true
+      - --libreoffice-max-queue-size=2
+      - --libreoffice-deny-list=.*
+    volumes:
+      - C:/Windows/Fonts/times.ttf:/usr/local/share/fonts/times.ttf:ro
+      - C:/Windows/Fonts/timesbd.ttf:/usr/local/share/fonts/timesbd.ttf:ro
+      - C:/Windows/Fonts/timesbi.ttf:/usr/local/share/fonts/timesbi.ttf:ro
+      - C:/Windows/Fonts/timesi.ttf:/usr/local/share/fonts/timesi.ttf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/health > /dev/null && fc-match 'Times New Roman' | grep -q 'Times New Roman'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - documents
+    restart: unless-stopped
+  backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: nda_tracker
+      PGUSER: nda_app
+      PGPASSWORD: ${NDA_DB_PASSWORD:?NDA_DB_PASSWORD is required}
+      PGOPTIONS: -c default_transaction_read_only=on
+      NDA_BACKUP_DIR: /backups
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backups/automatic:/backups
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+volumes:
+  nda_pgdata:
+networks:
+  documents:
+    internal: true
