@@ -231,7 +231,7 @@ Current limits:
 
 ## Quick Start
 
-1. Download the verified Windows x64 installer from [GitHub Releases](https://github.com/shiebin-bit/nda-tracking-dashboard/releases) when a preview release is available.
+1. Download the Windows x64 installer from the [v0.2.0-beta.1 preview release](https://github.com/shiebin-bit/nda-tracking-dashboard/releases/tag/v0.2.0-beta.1). The runtime and PDF converter are included; no separate dependency installation is needed. This preview is unsigned; company application policies may require IT approval.
 2. Install and open **NDA Tracker**. No separate Docker, Node.js or database installation is needed.
 3. Add suppliers/projects and documents, or import Excel. A fresh installation starts empty.
 4. In **Settings → Desktop workspace**, configure your own Brevo connection and optional Windows startup.

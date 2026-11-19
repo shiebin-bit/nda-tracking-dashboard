@@ -5,6 +5,10 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $dashboardUrl = 'http://127.0.0.1:5183'
 
+if (Test-Path -LiteralPath (Join-Path $projectRoot 'desktop/main.cjs')) {
+    throw 'This source is the Windows desktop edition. Use the NDA Tracker installer or npm run desktop:dev. Do not rebuild an existing PostgreSQL deployment from this branch; use the preserved legacy revision and migration guide.'
+}
+
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw 'Docker Desktop is required. Install and open Docker Desktop, then try again.'
 }

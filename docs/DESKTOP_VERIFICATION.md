@@ -24,4 +24,13 @@ The initial independent architecture review informed the implementation. A secon
 
 This preview is unsigned. It has not been tested on a clean Windows virtual machine or under the recipient company's application-control policy. Local LibreOffice output was rendered and inspected, including inherited page breaks; final contract pagination should still be reviewed before sending a document for signature. Physical printer output is not verified. Support targets Windows x64 with Windows Times New Roman available.
 
-Installer/reinstall checks and artifact hashes are recorded with the final build below once completed.
+## Installer and release artifact
+
+- Silent installation and subsequent installation over the same directory both exit successfully. The existing workspace database hash is unchanged by installation, and the installed backend modules match the final compiled source.
+- The installed executable completes the fresh-workspace generation, signing, backup/restore and tray workflow from a path containing spaces, with its child's PATH restricted to Windows System32.
+- Reopening a populated workspace after reinstall preserves its register entry, two documents, two signed files and reminder preferences. Downloaded signed-file hashes match the saved metadata.
+- [GitHub CI for the desktop implementation](https://github.com/shiebin-bit/nda-tracking-dashboard/actions/runs/44445617516) passes all unit tests, SQLite integration tests and the production build.
+
+Artifact: `NDA-Tracker-Setup-0.2.0-beta.1-x64.exe`, **394,851,742 bytes**.
+
+SHA-256: `cf719046ad59a4f02fed48b2487a33b13e1062c6350fee9cdedb30ab5ceb3632`.
