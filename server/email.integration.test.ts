@@ -38,6 +38,7 @@ suite('incremental PostgreSQL migration adoption', () => {
     const applied = await pool.query('SELECT name FROM schema_migration ORDER BY name');
     expect(applied.rows.map((row) => row.name)).toEqual([
       '001_initial.sql', '002_email_delivery.sql', '003_contracts.sql', '004_recycle_bin.sql', '005_signed_files.sql',
+      '008_supplier_email.sql', '009_documents_v2.sql', '010_display_references.sql',
     ]);
     await expect(pool.query('SELECT count(*)::integer count FROM email_delivery')).resolves.toMatchObject({ rows: [{ count: 0 }] });
   });
@@ -68,7 +69,8 @@ suite('PostgreSQL email delivery state machine', () => {
       expectedRevision: created.revision,
       settings: {
         ...created.snapshot.settings,
-        recipientEmail: 'first@example.com', ccEmail: 'copy@example.com', senderEmail: 'sender@example.com',
+        recipientEmail: 'first@example.com', ccEmail: 'copy@example.com',
+        ccEmails: ['copy@example.com','audit@example.com'], senderEmail: 'sender@example.com',
         sendTime: '09:00', reminderDays: [30], automaticRemindersEnabled: true,
       },
     });
@@ -85,7 +87,8 @@ suite('PostgreSQL email delivery state machine', () => {
     const secondStore = new PgEmailStore(pool);
     const claims = await Promise.all([firstStore.claimScheduled(now), secondStore.claimScheduled(now)]);
     const claim = claims.find((value) => value !== null)!;
-    expect(claim.delivery).toMatchObject({ status: 'sending', recipientEmail: 'first@example.com', recordCount: 1, attempts: 1 });
+    expect(claim.delivery).toMatchObject({ status: 'sending', recipientEmail: 'first@example.com',
+      ccEmails:['copy@example.com','audit@example.com'],recordCount: 1, attempts: 1 });
     expect(claims.filter(Boolean)).toHaveLength(1);
 
     const failed = await email.finalize(claim.delivery.id, { status: 'failed', error: 'Brevo rejected the request (HTTP 400).' }, now);
@@ -215,6 +218,7 @@ suite('PostgreSQL read-only reminder summary', () => {
     await migrate(pool);
     await pool.query(`UPDATE workspace SET settings=jsonb_build_object(
       'recipientEmail','digest@example.com','ccEmail','copy@example.com','senderEmail','sender@example.com',
+      'ccEmails',jsonb_build_array('copy@example.com','audit@example.com'),
       'sendTime','09:00','timeZone','Asia/Kuala_Lumpur','reminderDays',jsonb_build_array(30),
       'automaticRemindersEnabled',true
     ) WHERE id=1`);
@@ -247,6 +251,7 @@ suite('PostgreSQL read-only reminder summary', () => {
       enabled: true,
       recipientEmail: 'digest@example.com',
       ccEmail: 'copy@example.com',
+      ccEmails: ['copy@example.com','audit@example.com'],
       sendTime: '09:00',
       timeZone: 'Asia/Kuala_Lumpur',
       serverTime: '2026-10-19T02:00:00.000Z',

@@ -2,12 +2,16 @@ export type Fields = Record<string, string | number | null>;
 
 export interface NdaRecord {
   id: string;
+  /** Stable website display ID. Optional only for old JSON backups and test fixtures. */
+  reference?: string;
   fields: Fields;
   version: number;
   source: 'seed' | 'manual' | 'excel' | 'renewal';
   createdAt: string;
   updatedAt: string;
   renewedFromId?: string;
+  supplierId?: string | null;
+  supplierCode?: string | null;
 }
 
 export interface HistoryEvent {
@@ -22,7 +26,9 @@ export interface HistoryEvent {
 
 export interface Settings {
   recipientEmail: string;
+  /** @deprecated Use ccEmails. Kept for register-backup and client compatibility. */
   ccEmail: string;
+  ccEmails?: string[];
   senderEmail: string;
   sendTime: string;
   timeZone: 'Asia/Kuala_Lumpur';

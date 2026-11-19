@@ -41,8 +41,8 @@ export function RecycleBinPage({confirm,onRestoreAgreement}:Props){
     finally{setBusy(false);}
   };
   const query=search.trim().toLowerCase();
-  const records=(data?.records??[]).filter(r=>`${r.fields.Recipient??''} ${r.fields.Discloser??''} ${r.fields.PIC??''} ${r.fields['No.']??''}`.toLowerCase().includes(query));
-  const contracts=(data?.contracts??[]).filter(c=>`${c.values.recipient.name} ${c.values.discloser.name} ${c.values.pic}`.toLowerCase().includes(query));
+  const records=(data?.records??[]).filter(r=>`${r.reference??''} ${r.fields.Recipient??''} ${r.fields.Discloser??''} ${r.fields.PIC??''} ${r.fields['No.']??''}`.toLowerCase().includes(query));
+  const contracts=(data?.contracts??[]).filter(c=>`${c.reference??''} ${c.values.recipient.name} ${c.values.discloser.name} ${c.values.pic}`.toLowerCase().includes(query));
   const rows=tab==='records'?records:contracts;
   return <div className="recycle-workspace">
     <p className="recycle-explainer"><Trash2 size={18}/><span>Deleted items stay here until you restore them. Agreements in the recycle bin are excluded from future reminder checks. History and contract files are kept.</span></p>
@@ -58,7 +58,7 @@ export function RecycleBinPage({confirm,onRestoreAgreement}:Props){
         const agreement='fields' in item;
         const name=agreement?String(item.fields.Recipient||'Unnamed agreement'):item.values.recipient.name||'Unnamed contract';
         return <li key={item.id}><div className="recycle-item-heading"><strong>{name}</strong><Badge tone="gray">{agreement?String(item.fields.Status||'Pending'):item.status==='signed'?'Signed':'Draft'}</Badge></div>
-          <p>{agreement?`Agreement #${String(item.fields['No.']??'—')} · PIC: ${String(item.fields.PIC||'Unassigned')}`:`Contract ${item.id.slice(0,8)} · PIC: ${item.values.pic||'Unassigned'}`}</p>
+          <p>{agreement?`${item.reference||'Agreement'} · Excel #${String(item.fields['No.']??'—')} · PIC: ${String(item.fields.PIC||'Unassigned')}`:`${item.reference||'Document'} · PIC: ${item.values.pic||'Unassigned'}`}</p>
           <p className="recycle-item-meta">Deleted {timestamp(item.deletedAt)} MYT · {item.deletedBy}</p>
           {!agreement&&item.linkedNdaHistoricalId&&<small>The linked tracking agreement is managed separately.</small>}
           {agreement&&item.renewedFromId&&<small>Restore the previous agreement first if it is also in the recycle bin.</small>}

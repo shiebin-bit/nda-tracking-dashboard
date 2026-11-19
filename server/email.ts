@@ -25,6 +25,7 @@ type DeliveryRow = {
   status: EmailDelivery['status'];
   recipient_email: string;
   cc_email: string;
+  cc_emails: string[];
   sender_email: string;
   subject: string;
   html_content: string;
@@ -47,7 +48,7 @@ type SummaryTaskRow = {
   updated_at: string | Date;
   error: string | null;
 };
-const DELIVERY_COLUMNS = `id,kind,local_date::text AS local_date,status,recipient_email,cc_email,
+const DELIVERY_COLUMNS = `id,kind,local_date::text AS local_date,status,recipient_email,cc_email,cc_emails,
   sender_email,subject,html_content,record_count,created_at,updated_at,message_id,error,attempts`;
 
 function iso(value: string | Date): string {
@@ -72,6 +73,7 @@ function mapDelivery(row: DeliveryRow): EmailDelivery {
     status: row.status,
     recipientEmail: row.recipient_email,
     ccEmail: row.cc_email,
+    ccEmails: Array.isArray(row.cc_emails) && row.cc_emails.length ? row.cc_emails : row.cc_email ? [row.cc_email] : [],
     senderEmail: row.sender_email,
     subject: row.subject,
     htmlContent: row.html_content,
@@ -240,7 +242,8 @@ export class BrevoClient {
       subject: delivery.subject,
       htmlContent: delivery.htmlContent,
     };
-    if (delivery.ccEmail) payload.cc = [{ email: delivery.ccEmail }];
+    const ccEmails = delivery.ccEmails ?? (delivery.ccEmail ? [delivery.ccEmail] : []);
+    if (ccEmails.length) payload.cc = ccEmails.map((email) => ({ email }));
     try {
       const response = await this.fetcher(`${BREVO_BASE_URL}/smtp/email`, {
         method: 'POST',
@@ -291,11 +294,11 @@ async function currentSettings(client: PoolClient, lock = false): Promise<Settin
 
 async function insertDelivery(client: PoolClient, delivery: EmailDelivery): Promise<void> {
   await client.query(`INSERT INTO email_delivery(
-    id,kind,local_date,status,recipient_email,cc_email,sender_email,subject,html_content,
+    id,kind,local_date,status,recipient_email,cc_email,cc_emails,sender_email,subject,html_content,
     record_count,created_at,updated_at,message_id,error,attempts
-  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [
+  ) VALUES($1,$2,$3,$4,$5,$6,$7::text[],$8,$9,$10,$11,$12,$13,$14,$15,$16)`, [
     delivery.id, delivery.kind, delivery.localDate, delivery.status, delivery.recipientEmail,
-    delivery.ccEmail, delivery.senderEmail, delivery.subject, delivery.htmlContent,
+    delivery.ccEmail, delivery.ccEmails ?? (delivery.ccEmail ? [delivery.ccEmail] : []), delivery.senderEmail, delivery.subject, delivery.htmlContent,
     delivery.recordCount, delivery.createdAt, delivery.updatedAt, delivery.messageId,
     delivery.error, delivery.attempts,
   ]);
@@ -374,6 +377,7 @@ export class PgEmailStore {
         enabled,
         recipientEmail: settings.recipientEmail,
         ccEmail: settings.ccEmail,
+        ccEmails: settings.ccEmails ?? (settings.ccEmail ? [settings.ccEmail] : []),
         sendTime: settings.sendTime,
         timeZone: 'Asia/Kuala_Lumpur',
         serverTime: now.toISOString(),
@@ -411,7 +415,7 @@ export class PgEmailStore {
       const timestamp = now.toISOString();
       const delivery: EmailDelivery = {
         id: randomUUID(), kind: 'test', localDate: todayMY(now), status: 'sending',
-        recipientEmail, ccEmail: '', senderEmail, ...content, recordCount: 0,
+        recipientEmail, ccEmail: '', ccEmails: [], senderEmail, ...content, recordCount: 0,
         createdAt: timestamp, updatedAt: timestamp, messageId: null, error: null, attempts: 1,
       };
       await insertDelivery(client, delivery);
@@ -436,7 +440,8 @@ export class PgEmailStore {
       const delivery: EmailDelivery = {
         id: randomUUID(), kind: 'scheduled', localDate: date,
         status: candidates.length ? 'sending' : 'skipped',
-        recipientEmail: settings.recipientEmail, ccEmail: settings.ccEmail, senderEmail: sender,
+        recipientEmail: settings.recipientEmail, ccEmail: settings.ccEmail,
+        ccEmails: settings.ccEmails ?? (settings.ccEmail ? [settings.ccEmail] : []), senderEmail: sender,
         ...content, recordCount: candidates.length, createdAt: timestamp, updatedAt: timestamp,
         messageId: null, error: candidates.length ? null : 'No NDA reminders were due.',
         attempts: candidates.length ? 1 : 0,
@@ -473,6 +478,7 @@ export class PgEmailStore {
         replacement = {
           ...delivery, status: candidates.length ? 'sending' : 'skipped',
           recipientEmail: settings.recipientEmail, ccEmail: settings.ccEmail,
+          ccEmails: settings.ccEmails ?? (settings.ccEmail ? [settings.ccEmail] : []),
           senderEmail: settings.senderEmail, ...content, recordCount: candidates.length,
           updatedAt: timestamp, messageId: null,
           error: candidates.length ? null : 'No NDA reminders were due.',
@@ -482,9 +488,10 @@ export class PgEmailStore {
       } else {
         replacement = { ...delivery, status: 'sending', updatedAt: timestamp, messageId: null, error: null, attempts: delivery.attempts + 1 };
       }
-      await client.query(`UPDATE email_delivery SET status=$2,recipient_email=$3,cc_email=$4,sender_email=$5,
-        subject=$6,html_content=$7,record_count=$8,updated_at=$9,message_id=$10,error=$11,attempts=$12 WHERE id=$1`, [
-        id, replacement.status, replacement.recipientEmail, replacement.ccEmail, replacement.senderEmail,
+      await client.query(`UPDATE email_delivery SET status=$2,recipient_email=$3,cc_email=$4,cc_emails=$5::text[],sender_email=$6,
+        subject=$7,html_content=$8,record_count=$9,updated_at=$10,message_id=$11,error=$12,attempts=$13 WHERE id=$1`, [
+        id, replacement.status, replacement.recipientEmail, replacement.ccEmail,
+        replacement.ccEmails ?? (replacement.ccEmail ? [replacement.ccEmail] : []), replacement.senderEmail,
         replacement.subject, replacement.htmlContent, replacement.recordCount, replacement.updatedAt,
         replacement.messageId, replacement.error, replacement.attempts,
       ]);

@@ -5,6 +5,8 @@ import PizZip from 'pizzip';
 import { templateData } from '../src/contract-core.js';
 import type { ContractValues } from '../src/contract-types.js';
 import { withTransaction } from './db.js';
+import { AppError } from './errors.js';
+import { renderPdfTemplate, resolveTemplateFields } from './template-render.js';
 
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const PDF_TYPE = 'application/pdf';
@@ -12,7 +14,7 @@ const MAX_ARTIFACT_BYTES = 20 * 1024 * 1024;
 const LEASE_MS = 5 * 60_000;
 
 class ConversionError extends Error {
-  constructor(message: string, readonly transient: boolean) { super(message); }
+  constructor(message: string, readonly transient: boolean, readonly code?: string) { super(message); }
 }
 
 function checksum(content: Buffer): string {
@@ -24,14 +26,14 @@ function safeName(value: string): string {
   return cleaned.slice(0, 120) || 'contract';
 }
 
-export function renderContractDocx(template: Buffer, values: ContractValues): Buffer {
+export function renderContractDocx(template: Buffer, values: ContractValues, customValues: Record<string, string> = {}): Buffer {
   const zip = new PizZip(template);
   const doc = new Docxtemplater(zip, {
     paragraphLoop: true,
     linebreaks: true,
     nullGetter: () => '',
   });
-  const data = templateData(values);
+  const data = templateData(values, customValues);
   doc.render(data);
   const output = doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' }) as Buffer;
   if (output.length > MAX_ARTIFACT_BYTES) throw new ConversionError('Generated DOCX exceeds 20 MiB.', false);
@@ -152,7 +154,7 @@ export class DocumentWorker {
       for (const row of expired.rows) {
         await client.query(
           `UPDATE document_job_item SET status=CASE WHEN attempts>=3 THEN
-             CASE WHEN docx_artifact_id IS NULL THEN 'failed' ELSE 'partial' END ELSE 'queued' END,
+             CASE WHEN template_format='docx' AND docx_artifact_id IS NOT NULL THEN 'partial' ELSE 'failed' END ELSE 'queued' END,
              next_attempt_at=now(),
              error_code=CASE WHEN attempts>=3 THEN 'worker_interrupted' ELSE NULL END,
              error_message=CASE WHEN attempts>=3 THEN 'Generation was interrupted before completion.' ELSE NULL END,
@@ -198,7 +200,7 @@ export class DocumentWorker {
       );
       await client.query(
         `UPDATE document_job_item SET status=CASE WHEN attempts>=3 THEN
-           CASE WHEN docx_artifact_id IS NULL THEN 'failed' ELSE 'partial' END ELSE 'queued' END,
+           CASE WHEN template_format='docx' AND docx_artifact_id IS NOT NULL THEN 'partial' ELSE 'failed' END ELSE 'queued' END,
            updated_at=now() WHERE job_id=$1 AND status='running'`, [jobId],
       );
       return jobId;
@@ -235,12 +237,19 @@ export class DocumentWorker {
     let docx: Buffer;
     let docxArtifactId: string | null = item.docx_artifact_id;
     try {
+      if ((item.template_format ?? 'docx') === 'pdf') {
+        const resolved = resolveTemplateFields(item.values_snapshot as ContractValues, item.custom_values_snapshot ?? {}, item.field_schema ?? []);
+        const pdf = await renderPdfTemplate(item.template_bytes, item.editor_snapshot ?? { format:'pdf',fields:item.field_schema??[],placements:[] }, resolved);
+        await this.completeItem(item, null, pdf);
+        return;
+      }
       if (docxArtifactId) {
         const existing = await this.pool.query('SELECT content FROM document_artifact WHERE id=$1', [docxArtifactId]);
         if (!existing.rows[0]) throw new ConversionError('Stored DOCX artifact is unavailable.', false);
         docx = existing.rows[0].content;
       } else {
-        docx = renderContractDocx(item.template_bytes, item.values_snapshot as ContractValues);
+        const resolved = resolveTemplateFields(item.values_snapshot as ContractValues,item.custom_values_snapshot??{},item.field_schema??[]);
+        docx = renderContractDocx(item.template_bytes, item.values_snapshot as ContractValues, {...(item.custom_values_snapshot??{}),...resolved});
         docxArtifactId = randomUUID();
         const fileName = `${safeName(item.contract_id)}.docx`;
         await withTransaction(this.pool, async (client) => {
@@ -259,7 +268,9 @@ export class DocumentWorker {
       const pdf = await convertContractToPdf(this.converterUrl, docx, `${safeName(item.contract_id)}.docx`);
       await this.completeItem(item, docxArtifactId, pdf);
     } catch (error) {
-      const failure = error instanceof ConversionError ? error : new ConversionError('Document generation failed.', false);
+      const failure = error instanceof ConversionError ? error
+        : error instanceof AppError ? new ConversionError(error.message,false,error.code)
+          : new ConversionError('Document generation failed.', false);
       if (failure.transient && item.attempts < 3) {
         const delayMs = Math.min(60_000, this.backoffBaseMs * (2 ** (item.attempts - 1)));
         await this.pool.query(
@@ -272,13 +283,13 @@ export class DocumentWorker {
       } else {
         await this.pool.query(
           `UPDATE document_job_item SET status='failed',error_code=$2,error_message=$3,updated_at=now() WHERE id=$1`,
-          [item.id, failure.transient ? 'converter_unavailable' : 'generation_failed', failure.message],
+          [item.id, failure.transient ? 'converter_unavailable' : failure.code ?? 'generation_failed', failure.message],
         );
       }
     }
   }
 
-  private async completeItem(item: Record<string, any>, docxArtifactId: string, pdf: Buffer): Promise<void> {
+  private async completeItem(item: Record<string, any>, docxArtifactId: string | null, pdf: Buffer): Promise<void> {
     await withTransaction(this.pool, async (client) => {
       await assertJobCapacity(client, item.job_id, pdf.length);
       const ordinal = await nextOrdinal(client, item.contract_id);
@@ -290,10 +301,13 @@ export class DocumentWorker {
       );
       await client.query(
         `INSERT INTO contract_version(id,contract_id,ordinal,template_id,template_key,template_version,template_checksum,
-          template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,created_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,now())`,
+          template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,template_format,custom_values_snapshot,
+          supplier_id_snapshot,project_id_snapshot,template_family_id_snapshot,created_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13::jsonb,$14,$15,$16,now())`,
         [versionId, item.contract_id, ordinal, item.template_id, item.template_key, item.template_version,
-          item.template_checksum, item.template_bytes, JSON.stringify(item.values_snapshot), docxArtifactId, pdfArtifactId],
+          item.template_checksum, item.template_bytes, JSON.stringify(item.values_snapshot), docxArtifactId, pdfArtifactId,
+          item.template_format ?? 'docx',JSON.stringify(item.custom_values_snapshot??{}),item.supplier_id_snapshot??null,
+          item.project_id_snapshot??null,item.template_family_id_snapshot??null],
       );
       await client.query(
         `UPDATE document_job_item SET status='complete',version_id=$2,pdf_artifact_id=$3,error_code=NULL,error_message=NULL,updated_at=now()
@@ -313,10 +327,13 @@ export class DocumentWorker {
       const versionId = randomUUID();
       await client.query(
         `INSERT INTO contract_version(id,contract_id,ordinal,template_id,template_key,template_version,template_checksum,
-          template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,created_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,NULL,now())`,
+          template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,template_format,custom_values_snapshot,
+          supplier_id_snapshot,project_id_snapshot,template_family_id_snapshot,created_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,NULL,$11,$12::jsonb,$13,$14,$15,now())`,
         [versionId, item.contract_id, ordinal, item.template_id, item.template_key, item.template_version,
-          item.template_checksum, item.template_bytes, JSON.stringify(item.values_snapshot), docxArtifactId],
+          item.template_checksum, item.template_bytes, JSON.stringify(item.values_snapshot), docxArtifactId,
+          item.template_format??'docx',JSON.stringify(item.custom_values_snapshot??{}),item.supplier_id_snapshot??null,
+          item.project_id_snapshot??null,item.template_family_id_snapshot??null],
       );
       await client.query(
         `UPDATE document_job_item SET status='partial',version_id=$2,error_code=$3,error_message=$4,updated_at=now()

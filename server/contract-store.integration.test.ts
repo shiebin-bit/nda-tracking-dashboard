@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Pool } from 'pg';
+import { PDFDocument } from 'pdf-lib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { contractValuesToTracking, createFfmContractDefaults } from '../src/contract-core';
 import { createEmptyFields } from '../src/core';
@@ -58,6 +59,18 @@ suite('contract PostgreSQL store integration', () => {
     await pool?.end();
     await admin?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     await admin?.end();
+  });
+
+  it('provides editable NDA and EOI templates without resetting saved edits on restart', async () => {
+    const drafts = await pool.query('SELECT d.*,f.document_type FROM template_draft d JOIN template_family f ON f.id=d.family_id');
+    expect(drafts.rows.map(row => row.document_type).sort()).toEqual(['eoi','nda']);
+    for (const draft of drafts.rows) expect(draft.editor_snapshot.fields.length).toBeGreaterThan(0);
+    const draft = drafts.rows[0];
+    await pool.query('UPDATE template_draft SET name=$2,version=version+1 WHERE id=$1',[draft.id,'Saved working copy']);
+    await seedContractTemplates(pool);
+    const saved = (await pool.query('SELECT name,version FROM template_draft WHERE id=$1',[draft.id])).rows[0];
+    expect(saved).toEqual({name:'Saved working copy',version:2});
+    expect(Number((await pool.query('SELECT count(*) FROM template_draft')).rows[0].count)).toBe(2);
   });
 
   it('keeps request replay idempotent, detects reuse, and enforces optimistic versions', async () => {
@@ -241,6 +254,44 @@ suite('contract PostgreSQL store integration', () => {
     const record = state.snapshot.records.find((candidate) => candidate.id === confirmed.recordId)!;
     expect(record.fields).toMatchObject({ Recipient: 'Client Sdn. Bhd.', Status: 'Pending', PIC: 'Lee' });
     expect(state.snapshot.history.filter((event) => event.ndaId === record.id)).toHaveLength(1);
+  });
+
+  it('generates and signs a PDF-only EOI without creating an NDA tracking record', async () => {
+    const supplierId=randomUUID(); const projectId=randomUUID(); const familyId=randomUUID(); const templateId=randomUUID();
+    await pool.query(`INSERT INTO supplier(id,supplier_code,company_name,registration_number,address,contact_name,contact_designation,contact_address,contact_email,version,created_at,updated_at)
+      VALUES($1,'SUP-EOI','EOI Supplier','','','','','','',1,now(),now())`,[supplierId]);
+    await pool.query(`INSERT INTO project(id,project_code,name,description,status,version,created_at,updated_at)
+      VALUES($1,'PRJ-EOI','Project Cedar','Feed evaluation','active',1,now(),now())`,[projectId]);
+    const pdf=await PDFDocument.create();pdf.addPage([300,200]);const pdfBytes=Buffer.from(await pdf.save({useObjectStreams:false}));
+    const fields=[{key:'project_name',label:'Project name',type:'text',required:true,source:'project_name'}];
+    const snapshot={format:'pdf',fields,placements:[],pages:[{page:1,width:300,height:200,rotation:0}],warnings:[]};
+    await pool.query(`INSERT INTO template_family(id,family_key,name,document_type,template_format,active,published_template_id,created_at,updated_at)
+      VALUES($1,'test-eoi-pdf','Test EOI PDF','eoi','pdf',true,NULL,now(),now())`,[familyId]);
+    await pool.query(`INSERT INTO contract_template(id,template_key,template_version,name,file_name,mime_type,content,checksum,tags,active,family_id,document_type,template_format,field_schema,editor_snapshot)
+      VALUES($1,'test-eoi-pdf','1','Test EOI PDF','test-eoi.pdf','application/pdf',$2,$3,$4::jsonb,true,$5,'eoi','pdf',$6::jsonb,$7::jsonb)`,
+      [templateId,pdfBytes,randomUUID(),JSON.stringify(['project_name']),familyId,JSON.stringify(fields),JSON.stringify(snapshot)]);
+    await pool.query('UPDATE template_family SET published_template_id=$2 WHERE id=$1',[familyId,templateId]);
+    const before=await pool.query('SELECT revision::text,(SELECT count(*)::integer FROM nda_record) nda_count FROM workspace WHERE id=1');
+    const nda=await contracts.create({requestId:randomUUID(),documentType:'nda',supplierId,projectId,values:completeValues()});
+    expect((await contracts.listContracts()).find((item)=>item.id===nda.contract.id)?.signedEoiMissing).toBe(true);
+    const created=await contracts.create({requestId:randomUUID(),documentType:'eoi',supplierId,projectId,templateFamilyId:familyId,values:createFfmContractDefaults()});
+    const queued=await contracts.enqueueGeneration(created.contract.id,{requestId:randomUUID(),expectedVersion:created.contract.version,templateId});
+    const worker=new DocumentWorker(pool,'http://converter.invalid',10,10);await worker.start();
+    let job=queued.job;
+    try {
+      for(let i=0;i<100&&job.status!=='complete';i+=1){await new Promise((resolve)=>setTimeout(resolve,20));job=await contracts.getJob(job.id);}
+    } finally { await worker.stop(); }
+    expect(job.status).toBe('complete');
+    expect(job.items[0].docxArtifactId).toBeNull();
+    expect(job.items[0].pdfArtifactId).toBeTruthy();
+    const details=await contracts.getContract(created.contract.id);const version=details.versions[0];
+    expect(version).toMatchObject({templateFormat:'pdf',docxArtifactId:null,complete:true,supplierId,projectId,templateFamilyId:familyId});
+    const uploaded=await attachSigned(created.contract.id,created.contract.version,version.id);
+    const confirmed=await contracts.confirmSigned(created.contract.id,{requestId:randomUUID(),expectedVersion:uploaded.contract.version,versionId:version.id,signedFileId:uploaded.signedFile.id});
+    expect(confirmed.recordId).toBeNull();expect(confirmed.contract.status).toBe('signed');
+    const after=await pool.query('SELECT revision::text,(SELECT count(*)::integer FROM nda_record) nda_count FROM workspace WHERE id=1');
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    expect((await contracts.listContracts()).find((item)=>item.id===nda.contract.id)?.signedEoiMissing).toBe(false);
   });
 
   it('runs persisted work sequentially through DOCX rendering and PDF conversion', async () => {

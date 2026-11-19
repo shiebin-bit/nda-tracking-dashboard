@@ -8,6 +8,7 @@ COPY tests ./tests
 COPY server ./server
 COPY migrations ./migrations
 COPY templates ./templates
+COPY public ./public
 RUN npm run build
 
 FROM node:22-alpine AS runtime

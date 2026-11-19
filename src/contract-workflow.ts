@@ -1,4 +1,13 @@
-import type {Contract, ContractValues, DocumentJob} from './contract-types';
+import type {Contract, ContractValues, ContractVersion, DocumentJob} from './contract-types';
+import {normalizeContractValues,normalizeCustomValues} from './contract-core';
+
+export function generationMatchesDraft(version:Pick<ContractVersion,'values'|'customValues'|'supplierId'|'projectId'|'templateFamilyId'>,draft:Pick<Contract,'values'|'customValues'|'supplierId'|'projectId'|'templateFamilyId'>):boolean {
+  const custom=(values:Record<string,string>)=>JSON.stringify(Object.entries(normalizeCustomValues(values)).sort(([a],[b])=>a.localeCompare(b)));
+  return JSON.stringify(normalizeContractValues(version.values))===JSON.stringify(normalizeContractValues(draft.values))
+    && custom(version.customValues)===custom(draft.customValues)
+    && version.projectId===draft.projectId
+    && version.templateFamilyId===draft.templateFamilyId;
+}
 
 export type ContractStage = 'draft' | 'generating' | 'pdf-incomplete' | 'awaiting-copy' | 'awaiting-confirmation' | 'signed' | 'signed-missing-file';
 export type ContractNextAction = 'generate' | 'view-job' | 'upload' | 'confirm' | 'view';
@@ -24,17 +33,17 @@ export const contractStages: {value:ContractStage; label:string}[] = [
 ];
 
 export function getContractProgress(
-  contract: Pick<Contract,'status'|'currentSignedFileId'|'linkedNdaId'|'linkedNdaHistoricalId'> | null,
+  contract: (Pick<Contract,'status'|'currentSignedFileId'|'linkedNdaId'|'linkedNdaHistoricalId'> & Partial<Pick<Contract,'documentType'>>) | null,
   generation: GenerationSummary | null,
   generating = false,
 ): ContractProgress {
   if (contract?.status === 'signed') {
     if (!contract.currentSignedFileId) return {stage:'signed-missing-file',label:'Signed · File missing',hint:'Upload the final PDF to complete the file record. Existing tracking stays unchanged.',action:'upload',actionLabel:'Upload signed copy',step:2,tone:'amber'};
-    return {stage:'signed',label:'Signed',hint:contract.linkedNdaId?'Signed copy saved and tracking linked. Manage the agreement status in Input.':contract.linkedNdaHistoricalId?'Signed copy saved. The original tracking record is unavailable or in the recycle bin.':'Signed copy saved. No tracking record is linked.',action:'view',actionLabel:'View signed copy',step:4,tone:'green'};
+    return {stage:'signed',label:'Signed',hint:contract.documentType==='eoi'?'Signed EOI saved. No expiry tracking or reminder was created.':contract.linkedNdaId?'Signed copy saved and tracking linked. Manage the agreement status in Input.':contract.linkedNdaHistoricalId?'Signed copy saved. The original tracking record is unavailable or in the recycle bin.':'Signed copy saved. No tracking record is linked.',action:'view',actionLabel:'View signed copy',step:4,tone:'green'};
   }
-  if (contract?.currentSignedFileId) return {stage:'awaiting-confirmation',label:'Awaiting confirmation',hint:'Review the uploaded PDF, agreement date and PIC, then confirm the signature.',action:'confirm',actionLabel:'Review & confirm signed',step:3,tone:'teal'};
+  if (contract?.currentSignedFileId) return {stage:'awaiting-confirmation',label:'Awaiting confirmation',hint:contract.documentType==='eoi'?'Review the uploaded EOI PDF, then confirm the signature.':'Review the uploaded PDF, agreement date and PIC, then confirm the signature.',action:'confirm',actionLabel:'Review & confirm signed',step:3,tone:'teal'};
   if (generating) return {stage:'generating',label:'Generating',hint:'Word and PDF generation is running. Follow its progress below.',action:'view-job',actionLabel:'View generation progress',step:1,tone:'gray'};
-  if (!generation) return {stage:'draft',label:'Draft',hint:'Complete the company details, Purpose and Duration, then generate the agreement.',action:'generate',actionLabel:'Generate Word & PDF',step:0,tone:'gray'};
+  if (!generation) return {stage:'draft',label:'Draft',hint:contract?.documentType==='eoi'?'Select a supplier and project, complete the required template fields, then generate the EOI.':'Complete the company details, Purpose and Duration, then generate the agreement.',action:'generate',actionLabel:'Generate Word & PDF',step:0,tone:'gray'};
   if (!generation.matchesDraft) return {stage:'draft',label:'Draft · Changes to generate',hint:'The draft differs from the latest generated version. Generate again to include these changes.',action:'generate',actionLabel:'Generate updated files',step:0,tone:'amber'};
   if (!generation.complete) return {stage:'pdf-incomplete',label:'PDF incomplete',hint:'The Word file is saved. Open the generation job and retry PDF conversion.',action:'view-job',actionLabel:'Review generation',step:1,tone:'amber'};
   return {stage:'awaiting-copy',label:'Awaiting signed copy',hint:`Version ${generation.ordinal} is ready. Download it for signing, then upload the complete signed PDF.`,action:'upload',actionLabel:'Upload signed copy',step:2,tone:'teal'};
@@ -45,7 +54,7 @@ export function runningContractJob(jobs:DocumentJob[], contractId:string): Docum
 }
 
 export function matchesContractFilters(
-  contract: Pick<Contract,'status'|'values'>,
+  contract: Pick<Contract,'status'|'values'> & {reference?:string},
   progress: ContractProgress,
   filters: {search:string; status:string; stage:string; pic:string},
 ): boolean {
@@ -53,7 +62,7 @@ export function matchesContractFilters(
   return (filters.status === 'all' || contract.status === filters.status)
     && (filters.stage === 'all' || progress.stage === filters.stage)
     && (filters.pic === 'all' || (filters.pic === 'unassigned' ? !values.pic.trim() : values.pic.trim() === filters.pic.slice(4)))
-    && `${values.recipient.name} ${values.discloser.name} ${values.pic} ${values.purpose}`.toLowerCase().includes(filters.search.trim().toLowerCase());
+    && `${contract.reference??''} ${values.recipient.name} ${values.discloser.name} ${values.pic} ${values.purpose}`.toLowerCase().includes(filters.search.trim().toLowerCase());
 }
 
 export const contractFieldId = (path:string) => `contract-${path.replaceAll('.','-')}`;

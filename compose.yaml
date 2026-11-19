@@ -25,6 +25,7 @@ services:
       BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-}
       NDA_BACKUP_DIR: /backups/automatic
       NDA_CONVERTER_URL: http://converter:3000
+      NDA_DOCUMENT_FONT_PATH: /usr/local/share/fonts/times.ttf
     depends_on:
       db:
         condition: service_healthy
@@ -32,6 +33,7 @@ services:
       - "127.0.0.1:${NDA_PORT:-5183}:3000"
     volumes:
       - ./backups/automatic:/backups/automatic:ro
+      - C:/Windows/Fonts/times.ttf:/usr/local/share/fonts/times.ttf:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health/ready"]
       interval: 5s
@@ -77,6 +79,8 @@ services:
       NDA_BACKUP_DIR: /backups
     depends_on:
       db:
+        condition: service_healthy
+      app:
         condition: service_healthy
     volumes:
       - ./backups/automatic:/backups

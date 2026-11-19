@@ -13,6 +13,17 @@ describe('server domain validation',()=>{
   it('validates optional settings email addresses',()=>{
     expect(()=>normalizeSettings({...settings,recipientEmail:'bad',reminderDays:[30]})).toThrow(/valid email/);
   });
+  it('normalizes, deduplicates and limits multiple CC addresses while accepting legacy settings',()=>{
+    expect(normalizeSettings({...settings,ccEmail:'Legacy@Example.com',reminderDays:[30]})).toMatchObject({
+      ccEmail:'Legacy@Example.com',ccEmails:['Legacy@Example.com'],
+    });
+    expect(normalizeSettings({...settings,ccEmails:[' Copy@example.com ','copy@EXAMPLE.com','second@example.com'],reminderDays:[30]})).toMatchObject({
+      ccEmail:'Copy@example.com',ccEmails:['Copy@example.com','second@example.com'],
+    });
+    expect(()=>normalizeSettings({...settings,recipientEmail:'same@example.com',ccEmails:['SAME@example.com'],reminderDays:[30]})).toThrow(/different/);
+    expect(()=>normalizeSettings({...settings,ccEmails:Array.from({length:11},(_,i)=>`copy${i}@example.com`),reminderDays:[30]})).toThrow(/maximum of 10/);
+    expect(()=>normalizeSettings({...settings,ccEmail:'legacy@example.com',ccEmails:['not-an-email'],reminderDays:[30]})).toThrow(/valid/);
+  });
   it('accepts legacy text IDs and rejects orphan links before restore',()=>{
     expect(normalizeSnapshot(base).records[0].id).toBe('seed-001');
     expect(()=>normalizeSnapshot({...base,history:[{id:'history-seed-001',ndaId:'missing',type:'x',timestamp:'2026-01-01T00:00:00Z',actor:'x',summary:'x',changes:[]}]})).toThrow(/missing NDA/);

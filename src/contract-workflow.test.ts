@@ -1,14 +1,22 @@
 import {describe,expect,it} from 'vitest';
 import {createFfmContractDefaults} from './contract-core';
-import {contractFieldLabel,generationRequired,getContractProgress,matchesContractFilters,runningContractJob} from './contract-workflow';
+import {contractFieldLabel,generationRequired,generationMatchesDraft,getContractProgress,matchesContractFilters,runningContractJob} from './contract-workflow';
 import type {Contract,DocumentJob} from './contract-types';
 
 const draft={status:'draft',currentSignedFileId:null,linkedNdaId:null,linkedNdaHistoricalId:null} as const;
 const generation={id:'version',ordinal:2,complete:true,matchesDraft:true};
 
 describe('contract workflow guidance',()=>{
+  it('requires regeneration when custom values or document associations change',()=>{
+    const saved={values:createFfmContractDefaults(),customValues:{a:'one',b:'two'},supplierId:'supplier',projectId:'project',templateFamilyId:'family'};
+    expect(generationMatchesDraft(saved,{...saved,customValues:{b:'two',a:'one'}})).toBe(true);
+    expect(generationMatchesDraft(saved,{...saved,customValues:{a:'changed',b:'two'}})).toBe(false);
+    expect(generationMatchesDraft(saved,{...saved,supplierId:'reclassified'})).toBe(true);
+    for(const key of ['projectId','templateFamilyId'] as const)expect(generationMatchesDraft(saved,{...saved,[key]:'different'})).toBe(false);
+  });
   it('moves through draft, generating, ready for signing, uploaded and confirmed without claiming active reminders',()=>{
     expect(getContractProgress(null,null).stage).toBe('draft');
+    expect(getContractProgress({...draft,documentType:'eoi'},null).hint).toContain('supplier and project');
     expect(getContractProgress(draft,null,true).stage).toBe('generating');
     expect(getContractProgress(draft,generation).stage).toBe('awaiting-copy');
     expect(getContractProgress({...draft,currentSignedFileId:'signed-file'},generation).action).toBe('confirm');
@@ -37,6 +45,7 @@ describe('contract workflow guidance',()=>{
     const progress=getContractProgress(draft,generation);
     const filters={status:'draft',stage:'awaiting-copy',pic:'pic:all',search:'  PRODUCTS  '};
     expect(matchesContractFilters(c,progress,filters)).toBe(true);
+    expect(matchesContractFilters({...c,reference:'DOC-000042'},progress,{...filters,search:'doc-000042'})).toBe(true);
     expect(matchesContractFilters(c,progress,{...filters,pic:'unassigned'})).toBe(false);
     expect(matchesContractFilters(c,progress,{...filters,status:'signed'})).toBe(false);
     expect(matchesContractFilters(c,progress,{...filters,stage:'draft'})).toBe(false);

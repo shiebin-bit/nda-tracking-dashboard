@@ -12,6 +12,10 @@ import { readBackupStatus } from './backup-status.js';
 import { PgContractStore } from './contract-store.js';
 import { ZipFile } from 'yazl';
 import { parseSignedFileUpload } from './signed-file-upload.js';
+import { PgSupplierStore } from './supplier-store.js';
+import { PgTemplateStore } from './template-store.js';
+import { parseTemplateUpload } from './template-upload.js';
+import type { DocumentType } from '../src/contract-types.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -124,6 +128,8 @@ async function serveFile(pathname: string, config: ServerConfig, response: Serve
 export function createHandler(pool: Pool, config: ServerConfig, email = new EmailService(pool, config)) {
   const store = new PgNdaStore(pool, (settings) => email.validateAutomaticSettings(settings));
   const contracts = new PgContractStore(pool);
+  const suppliers = new PgSupplierStore(pool);
+  const templates = new PgTemplateStore(pool,config.converterUrl);
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const started = Date.now();
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -139,11 +145,20 @@ export function createHandler(pool: Pool, config: ServerConfig, email = new Emai
       }
       if (url.pathname.startsWith('/api/')) {
         const signedFileUpload = /^\/api\/contracts\/([^/]+)\/signed-files$/.exec(url.pathname);
+        const templateUpload = url.pathname === '/api/contract-templates/import' && method === 'POST';
         if ((method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE')
-          && !(signedFileUpload && method === 'POST')) requireJson(request);
+          && !(signedFileUpload && method === 'POST') && !templateUpload) requireJson(request);
         let result: unknown;
         let status = 200;
         if (url.pathname === '/api/state' && method === 'GET') result = await store.state();
+        else if (url.pathname === '/api/suppliers' && method === 'GET') result = { suppliers: await suppliers.listSuppliers() };
+        else if (url.pathname === '/api/suppliers' && method === 'POST') {
+          result = { supplier: await suppliers.createSupplier(await body(request,config.bodyLimitBytes)) }; status = 201;
+        }
+        else if (url.pathname === '/api/projects' && method === 'GET') result = { projects: await suppliers.listProjects() };
+        else if (url.pathname === '/api/projects' && method === 'POST') {
+          result = { project: await suppliers.createProject(await body(request,config.bodyLimitBytes)) }; status = 201;
+        }
         else if (url.pathname === '/api/recycle-bin' && method === 'GET') {
           const [records, recycledContracts] = await Promise.all([store.recycledRecords(), contracts.recycledContracts()]);
           result = { records, contracts: recycledContracts };
@@ -159,6 +174,17 @@ export function createHandler(pool: Pool, config: ServerConfig, email = new Emai
         else if (url.pathname === '/api/settings' && method === 'PUT') result = await store.updateSettings(await body(request,config.bodyLimitBytes));
         else if (url.pathname === '/api/backups/restore' && method === 'POST') result = await store.restore(await body(request,config.bodyLimitBytes));
         else if (url.pathname === '/api/contract-templates' && method === 'GET') result = {templates:await contracts.listTemplates()};
+        else if (url.pathname === '/api/contract-templates/families' && method === 'GET') result = {families:await templates.listFamilies()};
+        else if (url.pathname === '/api/contract-template-drafts' && method === 'GET') result = {drafts:await templates.listDrafts()};
+        else if (templateUpload) {
+          const upload = await parseTemplateUpload(request);
+          result = await templates.importTemplate({
+            content:upload.content,fileName:upload.originalFileName,contentType:upload.contentType,
+            requestId:upload.fields.requestId,key:upload.fields.key,name:upload.fields.name,
+            documentType:upload.fields.documentType as DocumentType,
+          });
+          status=201;
+        }
         else if (url.pathname === '/api/contracts' && method === 'GET') result = {contracts:await contracts.listContracts()};
         else if (url.pathname === '/api/contracts' && method === 'POST') result = await contracts.create(await body(request,config.bodyLimitBytes));
         else if (url.pathname === '/api/contracts/imports/preflight' && method === 'POST') result = contracts.preflight(await body(request,config.bodyLimitBytes));
@@ -168,6 +194,14 @@ export function createHandler(pool: Pool, config: ServerConfig, email = new Emai
           result = await contracts.enqueueBatch(await body(request,config.bodyLimitBytes)); status = 202;
         }
         else {
+          const supplier = /^\/api\/suppliers\/([^/]+)$/.exec(url.pathname);
+          const supplierAssignments = /^\/api\/suppliers\/([^/]+)\/assignments$/.exec(url.pathname);
+          const project = /^\/api\/projects\/([^/]+)$/.exec(url.pathname);
+          const recordSupplier = /^\/api\/records\/([^/]+)\/supplier$/.exec(url.pathname);
+          const templateDraft = /^\/api\/contract-template-drafts\/([^/]+)$/.exec(url.pathname);
+          const templatePreview = /^\/api\/contract-template-drafts\/([^/]+)\/preview$/.exec(url.pathname);
+          const templatePublish = /^\/api\/contract-template-drafts\/([^/]+)\/publish$/.exec(url.pathname);
+          const templateSource = /^\/api\/contract-template-drafts\/([^/]+)\/source$/.exec(url.pathname);
           const renew = /^\/api\/records\/([^/]+)\/renew$/.exec(url.pathname);
           const followUp = /^\/api\/records\/([^/]+)\/follow-up-notes$/.exec(url.pathname);
           const update = /^\/api\/records\/([^/]+)$/.exec(url.pathname);
@@ -186,7 +220,26 @@ export function createHandler(pool: Pool, config: ServerConfig, email = new Emai
           const jobArchive = /^\/api\/document-jobs\/([^/]+)\/archive$/.exec(url.pathname);
           const artifactContent = /^\/api\/document-artifacts\/([^/]+)\/content$/.exec(url.pathname);
           const signedFileContent = /^\/api\/contract-signed-files\/([^/]+)\/content$/.exec(url.pathname);
-          if (renew && method === 'POST') result = await store.renew(decodeURIComponent(renew[1]),await body(request,config.bodyLimitBytes));
+          if (supplier && method === 'GET') result = { supplier: await suppliers.supplier(decodeURIComponent(supplier[1])) };
+          else if (supplier && method === 'PATCH') result = { supplier: await suppliers.updateSupplier(decodeURIComponent(supplier[1]),await body(request,config.bodyLimitBytes)) };
+          else if (supplierAssignments && method === 'POST') result = await suppliers.assignItems(decodeURIComponent(supplierAssignments[1]),await body(request,config.bodyLimitBytes));
+          else if (project && method === 'PATCH') result = { project: await suppliers.updateProject(decodeURIComponent(project[1]),await body(request,config.bodyLimitBytes)) };
+          else if (recordSupplier && method === 'PATCH') result = await store.linkSupplier(decodeURIComponent(recordSupplier[1]),await body(request,config.bodyLimitBytes));
+          else if (templateDraft && method === 'PATCH') result = await templates.updateDraft(decodeURIComponent(templateDraft[1]),await body(request,config.bodyLimitBytes));
+          else if (templatePublish && method === 'POST') {
+            result=await templates.publishDraft(decodeURIComponent(templatePublish[1]),await body(request,config.bodyLimitBytes)); status=201;
+          }
+          else if (templatePreview && method === 'POST') {
+            const preview=await templates.previewDraft(decodeURIComponent(templatePreview[1]),await body(request,config.bodyLimitBytes));
+            response.setHeader('Content-Security-Policy',"default-src 'none'; frame-ancestors 'self'");
+            return binary(response,200,preview.content,preview.contentType,preview.fileName,'inline');
+          }
+          else if (templateSource && method === 'GET') {
+            const source=await templates.sourceDraft(decodeURIComponent(templateSource[1]));
+            response.setHeader('Content-Security-Policy',"default-src 'none'; frame-ancestors 'self'");
+            return binary(response,200,source.content,source.contentType,source.fileName,url.searchParams.get('download')==='1'?'attachment':'inline');
+          }
+          else if (renew && method === 'POST') result = await store.renew(decodeURIComponent(renew[1]),await body(request,config.bodyLimitBytes));
           else if (restoreRecord && method === 'POST') result = await store.restoreRecycled(decodeURIComponent(restoreRecord[1]),await body(request,config.bodyLimitBytes));
           else if (restoreContract && method === 'POST') result = await contracts.restoreRecycled(decodeURIComponent(restoreContract[1]),await body(request,config.bodyLimitBytes));
           else if (followUp && method === 'POST') result = await store.addFollowUpNote(decodeURIComponent(followUp[1]),await body(request,config.bodyLimitBytes));

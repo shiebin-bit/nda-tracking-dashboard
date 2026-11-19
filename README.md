@@ -27,7 +27,7 @@
 
 Preparing an NDA and following it up often involves an Excel register, a Word template, a folder of signed PDFs, and a separate reminder flow. NDA Tracker brings those steps into one local workspace.
 
-Users prepare agreements from the fixed FFM NDA template, generate Word and PDF versions, upload the final signed PDF, and confirm the agreement into tracking. The backend checks expiry dates and sends a daily digest through Brevo to the configured recipient, including Outlook or university mailboxes. Power Automate and Microsoft Entra registration are not required for this email path.
+Users select an NDA or EOI template, prepare documents, generate files and keep the final signed PDF. Confirming an NDA starts or links expiry tracking; confirming an EOI stores its signing status independently. Supplier IDs and projects connect related documents. The backend checks NDA expiry dates and sends a daily digest through Brevo to the configured recipient, including Outlook or university mailboxes. Power Automate and Microsoft Entra registration are not required for this email path.
 
 ## What It Covers
 
@@ -46,13 +46,19 @@ Users prepare agreements from the fixed FFM NDA template, generate Word and PDF 
 - Recoverable deletion for agreements and contracts
 - PostgreSQL persistence, register-only JSON recovery, and automatic complete database backups
 - Docker Compose setup with local application/database ports and an internal PDF conversion service
+- Stable website references for agreements (`AGR-000001`) and documents (`DOC-000001`), including existing records
+- Supplier IDs and shared projects, with explicit assignment of existing agreements/documents and review of linked groups
+- Versioned template drafts: DOCX paragraph/cell editing and fixed-layout PDF field placement
+- Up to ten CC recipients for the daily reminder digest
 
 ## Workspace Snapshot
 
 | Workspace | Main responsibility |
 | --- | --- |
 | **Overview** | Find agreements needing attention; search, filter, export Excel, and inspect reminder status |
-| **Contracts** | Prepare drafts, generate files, upload signed copies, and confirm agreements into tracking |
+| **Documents** | Choose a template through New document, prepare drafts, keep signed copies, and confirm NDAs into tracking |
+| **Suppliers** | Maintain internal supplier codes and shared projects; find linked agreements and project documents |
+| **Templates** | Import DOCX/PDF, edit text or field positions, preview and publish immutable versions |
 | **Input** | Register, edit, and renew tracking records using the original Excel fields |
 | **History** | Review record changes, imports, renewals, notes, settings changes, and recovery activity |
 | **Settings** | Configure reminder recipients, CC, check time, milestone days, email delivery, and backups |
@@ -78,7 +84,8 @@ These screenshots use an isolated demonstration dataset captured on 27 October 2
 
 ```mermaid
 flowchart LR
-    A[Enter details or import Excel drafts] --> B[Save draft]
+    T[New document: choose a published template] --> A[Enter details or import Excel drafts]
+    A --> B[Save draft]
     B --> C[Generate Word and PDF]
     C --> D[Review, download or print]
     D --> E[Collect signatures outside the system]
@@ -207,13 +214,13 @@ nda-tracking-dashboard/
 
 The local Docker workflow is implemented: contract preparation, document generation, final-PDF storage, manual signing confirmation, NDA tracking, reminders, history and recovery.
 
-Fresh installations create an **empty register** and seed the fixed template only. The repository does not recreate the original Excel records or import demonstration data on startup. Test fixtures are not runtime seeds.
+Fresh installations create an **empty register** and seed the FFM NDA and EOI templates. The repository does not recreate the original Excel records or import demonstration data on startup. Test fixtures are not runtime seeds.
 
 Current limits:
 
-- One fixed FFM NDA template family; no arbitrary Word upload editor or clause editor
+- DOCX editing preserves document structure; arbitrary Word layout editing and OCR are not included
 - Manual signature confirmation; no electronic signature service
-- One configured recipient and one optional CC address per digest
+- One configured recipient and up to ten optional CC addresses per digest
 - Local trusted access with no accounts or individual user attribution
 - Windows font mounts in the supplied Compose file; other operating systems need equivalent licensed font paths
 - Local backups need separate off-device protection
@@ -323,11 +330,11 @@ See the [Developer Guide](docs/DEVELOPMENT.md) for creating and removing that da
 
 Coverage includes date/milestone boundaries, Excel safety and duplicate handling, version conflicts, atomic renewal, follow-up notes, email scheduling and uncertain outcomes, document job recovery, signed-file validation and confirmation, and recycle-bin restoration.
 
-Local publication checks on **4 November 2026** passed: **109 unit tests**, **40 PostgreSQL integration tests**, client/server production compilation, and both application/backup Docker image builds.
+Feature checks on **18 November 2026** passed: **128 unit tests**, **52 PostgreSQL integration tests**, and client/server production compilation. The latest isolated checks covered reference backfilling and preservation, atomic Supplier classification, reassignment, and template-first document creation on desktop and mobile. Previous checks covered EOI signing without tracking, NDA tracking, duplicate confirmation, Supplier ID exclusion, PDF-only signing, rotated PDF fields, and rendered EOI pages.
 
 ### Dependency status
 
-On the same date, `npm audit --omit=dev` reported **8 moderate advisories**, with no high or critical advisories, in ExcelJS and its archive/glob dependency chain. They remain open; this publication does not change dependency versions. Review the current audit and compatibility impact before a broader deployment. A passing build or CI result is not a dependency-security clearance.
+On **17 November 2026**, `npm audit --omit=dev` reported **zero advisories** for the installed production dependency graph. Recheck the audit when upgrading dependencies; a passing build is not a security clearance for a public deployment.
 
 ## CI
 
@@ -343,6 +350,7 @@ The workflow verifies the repository; it does not deploy the dashboard or publis
 - [Architecture and Data Boundaries](docs/ARCHITECTURE.md)
 - [HTTP API Reference](docs/API.md)
 - [Template Preparation and Integrity](templates/README.md)
+- [Suppliers, Projects, EOI and Template Editing](docs/SUPPLIERS_AND_TEMPLATES.md)
 
 ## Repository Notes
 

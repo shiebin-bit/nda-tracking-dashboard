@@ -41,6 +41,15 @@ describe('Brevo transport', () => {
     expect(status).toMatchObject({ configured: true, connected: true, transactionalEnabled: true, defaultSenderEmail: 'verified@example.com' });
     expect(status.senders).toEqual([{ email: 'verified@example.com', name: 'Verified', active: true }]);
   });
+
+  it('sends every saved CC address and keeps legacy one-address deliveries compatible', async () => {
+    const fetcher=vi.fn(async()=>Response.json({messageId:'accepted'},{status:201})) as unknown as typeof fetch;
+    await new BrevoClient('test-key',undefined,fetcher).send({...delivery,ccEmail:'first@example.com',ccEmails:['first@example.com','second@example.com']});
+    const request=fetcher.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(request.body)).cc).toEqual([{email:'first@example.com'},{email:'second@example.com'}]);
+    await new BrevoClient('test-key',undefined,fetcher).send({...delivery,ccEmail:'legacy@example.com'});
+    expect(JSON.parse(String((fetcher.mock.calls[1][1] as RequestInit).body)).cc).toEqual([{email:'legacy@example.com'}]);
+  });
 });
 
 describe('email rendering and scheduling', () => {

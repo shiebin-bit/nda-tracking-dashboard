@@ -1,5 +1,5 @@
 import {useEffect,useState,useCallback,useRef} from 'react';
-import {LayoutDashboard,Plus,History,Settings2,ShieldCheck,PanelLeftClose,Menu,FileSpreadsheet,ChevronRight,Check,Mail,AlertTriangle,X,Database,Files,Trash2} from 'lucide-react';
+import {LayoutDashboard,Plus,History,Settings2,PanelLeftClose,Menu,FileSpreadsheet,ChevronRight,Check,Mail,AlertTriangle,X,Database,Files,Trash2,Building2,LayoutTemplate} from 'lucide-react';
 import {NdaRepository,ApiError} from './storage';
 import {todayMY,dateLabel,derive,getCandidates,createEmptyFields,type Snapshot,type NdaRecord,type Fields} from './core';
 import {Overview,InputPage,HistoryPage,SettingsPage} from './pages';
@@ -7,11 +7,13 @@ import {ImportDialog,DetailDrawer,EmailPreview} from './dialogs';
 import {download,Modal} from './components';
 import {ContractsPage} from './contracts';
 import {RecycleBinPage} from './recycle-bin';
+import {SuppliersPage} from './suppliers';
+import {TemplatesPage} from './templates';
 
 const repo=new NdaRepository();
 const loadArchives=()=>repo.listArchives();
-type Page='overview'|'contracts'|'input'|'history'|'settings'|'recycle';
-const nav=[{id:'overview' as Page,label:'Overview',icon:LayoutDashboard},{id:'contracts' as Page,label:'Contracts',icon:Files},{id:'input' as Page,label:'Input',icon:Plus},{id:'history' as Page,label:'History',icon:History},{id:'settings' as Page,label:'Settings',icon:Settings2},{id:'recycle' as Page,label:'Recycle bin',icon:Trash2}];
+type Page='overview'|'contracts'|'suppliers'|'templates'|'input'|'history'|'settings'|'recycle';
+const nav=[{id:'overview' as Page,label:'Overview',icon:LayoutDashboard},{id:'contracts' as Page,label:'Documents',icon:Files},{id:'suppliers' as Page,label:'Suppliers',icon:Building2},{id:'templates' as Page,label:'Templates',icon:LayoutTemplate},{id:'input' as Page,label:'Input',icon:Plus},{id:'history' as Page,label:'History',icon:History},{id:'settings' as Page,label:'Settings',icon:Settings2},{id:'recycle' as Page,label:'Recycle bin',icon:Trash2}];
 export interface Editor {record?:NdaRecord;renewal?:boolean;key:number;}
 export function App(){
   const [data,setData]=useState<Snapshot|null>(null);const [fatal,setFatal]=useState('');const [page,setPage]=useState<Page>('overview');
@@ -19,6 +21,7 @@ export function App(){
   const [editor,setEditor]=useState<Editor>({key:0});const [dirty,setDirty]=useState(false);
   const [noteDirty,setNoteDirty]=useState(false);
   const [detail,setDetail]=useState<string|null>(null);const [showImport,setShowImport]=useState(false);const [preview,setPreview]=useState(false);
+  const [contractTarget,setContractTarget]=useState<string|null>(null);
   const [collapsed,setCollapsed]=useState(false);const [mobile,setMobile]=useState(false);
   const [settingsRevision,setSettingsRevision]=useState(0);
   const [settingsSection,setSettingsSection]=useState<'email'|null>(null);
@@ -44,21 +47,23 @@ export function App(){
     const ok=await perform(()=>repo.recycle(r.id,r.version,requestId),'Agreement moved to Recycle bin.');
     if(ok){recycleRequests.current.delete(key);setNoteDirty(false);setDetail(null);}
   };
-  if(!data)return <main className="loading-shell"><ShieldCheck size={42}/><h1>NDA Tracker</h1>{fatal?<><p className="error-text">{fatal}</p><p>Start Docker Desktop and open this dashboard with OPEN-NDA-DASHBOARD.cmd.</p><button className="button primary" onClick={()=>{setFatal('');void load();}}>Try again</button></>:<p>Connecting to the database…</p>}</main>;
+  if(!data)return <main className="loading-shell"><img className="loading-logo" src="/ffm-logo.png" alt="FFM"/><h1>NDA Tracker</h1>{fatal?<><p className="error-text">{fatal}</p><p>Start Docker Desktop and open this dashboard with OPEN-NDA-DASHBOARD.cmd.</p><button className="button primary" onClick={()=>{setFatal('');void load();}}>Try again</button></>:<p>Connecting to the database…</p>}</main>;
   const selected=data.records.find(r=>r.id===detail);const candidateCount=getCandidates(data.records,today,data.settings.reminderDays).length;
   return <div className={`app-shell ${collapsed?'collapsed':''} ${mobile?'mobile-open':''}`}>
     <a href="#main" className="skip-link">Skip to content</a>
     {mobile&&<button className="nav-scrim" aria-label="Close navigation" onClick={()=>setMobile(false)}/>}
-    <aside className="sidebar"><button className="brand" onClick={()=>navigate('overview')}><span className="brand-icon"><ShieldCheck size={24}/></span><span>NDA<span className="brand-light"> tracker</span></span></button><button className="mobile-close icon-button" aria-label="Close navigation" onClick={()=>setMobile(false)}><X/></button>
+    <aside className="sidebar"><button className="brand" onClick={()=>navigate('overview')}><span className="brand-icon ffm-brand-icon"><img src="/ffm-logo.png" alt=""/></span><span>NDA<span className="brand-light"> tracker</span></span></button><button className="mobile-close icon-button" aria-label="Close navigation" onClick={()=>setMobile(false)}><X/></button>
       <div className="workspace-name"><div><strong>Agreement register</strong><small>Expiry & follow-up</small></div></div>
       <p className="nav-label">WORKSPACE</p><nav aria-label="Main navigation">{nav.map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} aria-current={page===n.id?'page':undefined} title={n.label} onClick={()=>navigate(n.id)} disabled={busy}><n.icon size={19}/><span>{n.label}</span>{page===n.id&&<i/>}</button>)}</nav>
       <div className="sidebar-bottom"><div className="local-note"><Database size={16}/><div><strong>Local workspace</strong><small>PostgreSQL · Brevo email</small></div></div><button className="collapse-button" aria-label={collapsed?'Expand sidebar':'Collapse sidebar'} onClick={()=>setCollapsed(!collapsed)}><PanelLeftClose size={18}/><span>Collapse sidebar</span></button></div>
     </aside>
     <div className="workspace"><header className="topbar"><div className="breadcrumbs"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={()=>setMobile(true)}><Menu size={22}/></button><span>Agreement register</span><ChevronRight size={13}/><strong>{nav.find(n=>n.id===page)?.label}</strong></div><div className="saved" role="status">{fatal?<AlertTriangle size={14}/>:<Check size={14}/>}<span>{fatal?'Connection interrupted':busy?'Saving…':dirty||noteDirty?'Unsaved changes':toast?.error?'Could not save':'All changes saved'}</span></div></header>
-      <main id="main"><div className="page-heading"><div><h1>{page==='overview'?'Agreement overview':page==='input'?(editor.renewal?'Renew agreement':editor.record?'Edit agreement':'New agreement'):page==='history'?'History & records':page==='contracts'?'Contracts':page==='recycle'?'Recycle bin':'Workspace settings'}</h1><p className="subtitle">{page==='overview'?`${dateLabel(today)} · Malaysia time (UTC+8)`:page==='input'?'Record agreement details and assign follow-up responsibility.':page==='history'?'Find agreements and review changes made in this workspace.':page==='contracts'?'Prepare, generate and track agreements in one workspace.':page==='recycle'?'Restore deleted agreements and contracts.':'Manage reminder preferences, email delivery and backups.'}</p></div>{page!=='input'&&page!=='contracts'&&page!=='recycle'&&<div className="heading-actions"><button className="button secondary" onClick={()=>setShowImport(true)} disabled={busy}><FileSpreadsheet size={17}/>Import Excel</button><button className="button primary" onClick={()=>openEditor()} disabled={busy}><Plus size={18}/>New NDA</button></div>}</div>
+      <main id="main"><div className="page-heading"><div><h1>{page==='overview'?'Agreement overview':page==='input'?(editor.renewal?'Renew agreement':editor.record?'Edit agreement':'New agreement'):page==='history'?'History & records':page==='contracts'?'Documents':page==='suppliers'?'Suppliers':page==='templates'?'Templates':page==='recycle'?'Recycle bin':'Workspace settings'}</h1><p className="subtitle">{page==='overview'?`${dateLabel(today)} · Malaysia time (UTC+8)`:page==='input'?`${editor.record?.reference?editor.record.reference+' · ':''}Record agreement details and assign follow-up responsibility.`:page==='history'?'Find agreements and review changes made in this workspace.':page==='contracts'?'Prepare NDA and EOI documents, keep signed copies, then start tracking.':page==='suppliers'?'Keep supplier IDs, projects and linked documents together.':page==='templates'?'Import, map, preview and publish controlled document templates.':page==='recycle'?'Restore deleted agreements and contracts.':'Manage reminder preferences, email delivery and backups.'}</p></div>{!['input','contracts','suppliers','templates','recycle'].includes(page)&&<div className="heading-actions"><button className="button secondary" onClick={()=>setShowImport(true)} disabled={busy}><FileSpreadsheet size={17}/>Import Excel</button><button className="button primary" onClick={()=>openEditor()} disabled={busy}><Plus size={18}/>New NDA</button></div>}</div>
         {fatal&&<div className="notice error" role="alert"><AlertTriangle size={18}/><div><strong>Database connection interrupted</strong><p>{fatal} The displayed records may be out of date.</p><button className="text-button" onClick={()=>void load()}>Reconnect</button></div></div>}
         {page==='overview'&&<Overview data={data} today={today} exportUnavailable={busy||!!fatal} onOpen={r=>setDetail(r.id)} onPreview={()=>setPreview(true)} onNew={()=>openEditor()} onViewEmailRecords={()=>{setSettingsSection('email');void navigate('settings');}}/>}
-        {page==='contracts'&&<ContractsPage records={data.records} onDirty={setDirty} onTracked={()=>{setDirty(false);setTimeout(()=>void load(),0);}} onEditRecord={record=>void openEditor(record)} confirm={confirmAction}/> }
+        {page==='contracts'&&<ContractsPage records={data.records} openContractId={contractTarget} onContractOpened={()=>setContractTarget(null)} onDirty={setDirty} onTracked={()=>{setDirty(false);setTimeout(()=>void load(),0);}} onEditRecord={record=>void openEditor(record)} confirm={confirmAction}/>}
+        {page==='suppliers'&&<SuppliersPage records={data.records} onDirty={setDirty} confirm={confirmAction} onLinked={()=>void load()} onOpenAgreement={id=>setDetail(id)} onOpenDocument={id=>{setContractTarget(id);setPage('contracts');window.scrollTo(0,0);}}/>}
+        {page==='templates'&&<TemplatesPage onDirty={setDirty} confirm={confirmAction}/>}
         {page==='recycle'&&<RecycleBinPage confirm={confirmAction} onRestoreAgreement={(record,requestId)=>perform(()=>repo.restoreRecord(record.id,record.version,requestId),'Agreement restored.',undefined,true)} />}
         {page==='input'&&<InputPage key={editor.key} editor={editor} data={data} today={today} busy={busy} onDirty={setDirty} onSave={save} onCancel={()=>navigate('overview')}/>}
         {page==='history'&&<HistoryPage data={data} today={today} onOpen={r=>setDetail(r.id)} onPreview={()=>setPreview(true)}/>}
@@ -66,7 +71,7 @@ export function App(){
         <footer className="page-footer"><span><span className="dot"/>PostgreSQL database · {data.records.length} agreements</span><button onClick={()=>setPreview(true)}><Mail size={13}/>{candidateCount} reminder{candidateCount===1?'':'s'} today · {data.settings.automaticRemindersEnabled?'Auto on':'Auto off'}</button></footer>
       </main>
     </div>
-    {selected&&<DetailDrawer key={selected.id} record={selected} today={today} history={data.history.filter(h=>h.ndaId===selected.id)} onClose={()=>{setNoteDirty(false);setDetail(null);}} onEdit={()=>openEditor(selected)} onRenew={()=>openEditor(selected,true)} onStatus={()=>void changeStatus(selected)} onDelete={()=>void recycleAgreement(selected)} onAddNote={(text,requestId)=>perform(()=>repo.addFollowUp(selected.id,selected.version,text,requestId),'Follow-up note saved.',selected.id)} onDraftChange={setNoteDirty} onConfirmDiscard={()=>confirmAction('Discard the unsaved follow-up note?')} busy={busy}/>}
+    {selected&&<DetailDrawer key={selected.id} record={selected} onSupplierChanged={()=>void load()} today={today} history={data.history.filter(h=>h.ndaId===selected.id)} onClose={()=>{setNoteDirty(false);setDetail(null);}} onEdit={()=>openEditor(selected)} onRenew={()=>openEditor(selected,true)} onStatus={()=>void changeStatus(selected)} onDelete={()=>void recycleAgreement(selected)} onAddNote={(text,requestId)=>perform(()=>repo.addFollowUp(selected.id,selected.version,text,requestId),'Follow-up note saved.',selected.id)} onDraftChange={setNoteDirty} onConfirmDiscard={()=>confirmAction('Discard the unsaved follow-up note?')} busy={busy}/>}
     {showImport&&<ImportDialog records={data.records} onClose={()=>setShowImport(false)} onImport={async rows=>{const ok=await perform(()=>repo.importRows(rows),'Excel records imported.');if(ok)setShowImport(false);return ok;}} busy={busy}/>}
     {preview&&<EmailPreview data={data} today={today} onClose={()=>setPreview(false)} onSettings={()=>{setPreview(false);navigate('settings');}}/>}
     {confirmation&&<Modal title="Confirm change" onClose={()=>finishConfirmation(false)}><div className="dialog-body"><p>{confirmation.message}</p></div><div className="dialog-actions"><button className="button secondary" onClick={()=>finishConfirmation(false)}>Cancel</button><button className="button primary" onClick={()=>finishConfirmation(true)}>Confirm</button></div></Modal>}

@@ -18,6 +18,7 @@ import { badRequest } from './errors.js';
 export const DEFAULT_SETTINGS: Settings = {
   recipientEmail: '',
   ccEmail: '',
+  ccEmails: [],
   senderEmail: '',
   sendTime: '09:00',
   timeZone: 'Asia/Kuala_Lumpur',
@@ -75,18 +76,43 @@ export function validateUpdatedFields(fields: Fields, previous: Fields): void {
 
 export function normalizeSettings(value: unknown, allowLegacyMissing = false): Settings {
   if (!isPlainObject(value)) throw badRequest('Settings must be an object.');
-  for (const key of ['recipientEmail', 'ccEmail', 'senderEmail', 'sendTime', 'timeZone']) {
+  for (const key of ['recipientEmail', 'senderEmail', 'sendTime', 'timeZone']) {
     if (typeof value[key] !== 'string') throw badRequest(`Setting ${key} must be text.`);
   }
+  if (value.ccEmail !== undefined && typeof value.ccEmail !== 'string') throw badRequest('Setting ccEmail must be text.');
+  if (value.ccEmails !== undefined && !Array.isArray(value.ccEmails)) throw badRequest('Setting ccEmails must be an array.');
   if (value.timeZone !== 'Asia/Kuala_Lumpur') throw badRequest('Unsupported time zone.');
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value.sendTime as string)) {
     throw badRequest('Send time must use HH:mm in 24-hour time.');
   }
   const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  for (const key of ['recipientEmail', 'ccEmail', 'senderEmail'] as const) {
+  for (const key of ['recipientEmail', 'senderEmail'] as const) {
     const email = (value[key] as string).trim();
     if (email && !emailPattern.test(email)) throw badRequest(`${key} must be a valid email address.`);
   }
+  const recipientEmail = (value.recipientEmail as string).trim();
+  const legacyCc = typeof value.ccEmail === 'string' ? value.ccEmail.trim() : '';
+  const modernCc = value.ccEmails as unknown[] | undefined;
+  const normalizeCcList = (entries: unknown[]): string[] => {
+    if (entries.length > 10) throw badRequest('A maximum of 10 CC email addresses is allowed.');
+    const normalized: string[] = []; const seen = new Set<string>();
+    for (const entry of entries) {
+      if (typeof entry !== 'string') throw badRequest('Every CC email address must be text.');
+      const email = entry.trim();
+      if (!email || !emailPattern.test(email)) throw badRequest('Every CC email address must be valid.');
+      const key = email.toLowerCase();
+      if (key === recipientEmail.toLowerCase()) throw badRequest('CC email addresses must be different from the reminder recipient.');
+      if (!seen.has(key)) { seen.add(key); normalized.push(email); }
+    }
+    return normalized;
+  };
+  const legacyEmails = legacyCc ? normalizeCcList([legacyCc]) : [];
+  const modernEmails = modernCc === undefined ? null : normalizeCcList(modernCc);
+  // During the compatibility window an older client may edit ccEmail after loading a
+  // state response that already contains ccEmails. A changed legacy value wins; new
+  // clients keep ccEmail synchronized to the first chip.
+  const ccEmails = modernEmails === null ? legacyEmails
+    : legacyEmails.length && modernEmails[0]?.toLowerCase() !== legacyEmails[0].toLowerCase() ? legacyEmails : modernEmails;
   const hasReminderDays = Object.prototype.hasOwnProperty.call(value, 'reminderDays');
   if (!hasReminderDays && !allowLegacyMissing) throw badRequest('Setting reminderDays is required.');
   let reminderDays: number[];
@@ -102,8 +128,9 @@ export function normalizeSettings(value: unknown, allowLegacyMissing = false): S
     throw badRequest('Setting automaticRemindersEnabled must be true or false.');
   }
   return {
-    recipientEmail: (value.recipientEmail as string).trim(),
-    ccEmail: (value.ccEmail as string).trim(),
+    recipientEmail,
+    ccEmail: ccEmails[0] ?? '',
+    ccEmails,
     senderEmail: (value.senderEmail as string).trim(),
     sendTime: value.sendTime as string,
     timeZone: 'Asia/Kuala_Lumpur',
@@ -130,8 +157,23 @@ function normalizeRecord(value: unknown, ids: Set<string>): NdaRecord {
   if (!['seed', 'manual', 'excel', 'renewal'].includes(String(value.source))) {
     throw badRequest(`Record ${value.id} has an invalid source.`);
   }
+  const reference = value.reference === undefined ? undefined
+    : typeof value.reference === 'string' && /^AGR-[0-9]{6,}$/.test(value.reference) ? value.reference : null;
+  if (reference === null) throw badRequest(`Record ${value.id} has an invalid display reference.`);
   if (value.renewedFromId !== undefined && typeof value.renewedFromId !== 'string') {
     throw badRequest(`Record ${value.id} has an invalid renewal link.`);
+  }
+  const supplierId = value.supplierId === undefined || value.supplierId === null ? null
+    : typeof value.supplierId === 'string' ? value.supplierId.trim() : null;
+  const supplierCode = value.supplierCode === undefined || value.supplierCode === null ? null
+    : typeof value.supplierCode === 'string' ? value.supplierCode.normalize('NFC').trim() : null;
+  if ((value.supplierId !== undefined && value.supplierId !== null && supplierId === null)
+      || supplierId?.includes('\0') || (supplierId?.length ?? 0) > 100) {
+    throw badRequest(`Record ${value.id} has an invalid supplier link.`);
+  }
+  if ((value.supplierCode !== undefined && value.supplierCode !== null && supplierCode === null)
+      || supplierCode?.includes('\0') || (supplierCode?.length ?? 0) > 100) {
+    throw badRequest(`Record ${value.id} has an invalid supplier code.`);
   }
   assertTimestamp(value.createdAt, 'Record createdAt');
   assertTimestamp(value.updatedAt, 'Record updatedAt');
@@ -154,12 +196,15 @@ function normalizeRecord(value: unknown, ids: Set<string>): NdaRecord {
   }
   return {
     id: value.id,
+    ...(reference ? { reference } : {}),
     fields: structuredClone(value.fields),
     version: value.version as number,
     source: value.source as NdaRecord['source'],
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     ...(value.renewedFromId ? { renewedFromId: value.renewedFromId } : {}),
+    ...(supplierId ? { supplierId } : {}),
+    ...(supplierCode ? { supplierCode } : {}),
   };
 }
 

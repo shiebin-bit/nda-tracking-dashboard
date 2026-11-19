@@ -1,0 +1,17 @@
+{
+  "key": "ffm-eoi-v1",
+  "familyKey": "ffm-eoi",
+  "version": "1.0",
+  "name": "FFM Expression of Interest",
+  "fileName": "ffm-eoi-v1.docx",
+  "documentType": "eoi",
+  "managed": true,
+  "fields": [
+    {"key":"recipient_name","label":"Supplier company","type":"text","required":true,"source":"recipient_name"},
+    {"key":"project_name","label":"Project name","type":"text","required":true,"source":"project_name"},
+    {"key":"project_description","label":"Project description","type":"text","required":false,"source":"project_description"},
+    {"key":"representative_name","label":"Authorised representative","type":"text","required":false,"source":"representative_name"},
+    {"key":"representative_designation","label":"Representative designation","type":"text","required":false,"source":"representative_designation"},
+    {"key":"document_date","label":"Document date","type":"date","required":false,"source":"document_date"}
+  ]
+}

@@ -31,17 +31,55 @@ export interface ContractValues {
 }
 
 export type ContractStatus = 'draft' | 'signed';
+export type DocumentType = 'nda' | 'eoi';
+export type TemplateFormat = 'docx' | 'pdf';
+
+export interface TemplateFieldDefinition {
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'date';
+  required: boolean;
+  source: string | null;
+}
+
+export interface PdfFieldPlacement {
+  field: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  font?: 'times' | 'helvetica' | 'courier';
+  align: 'left' | 'center' | 'right';
+}
+
+export interface TemplateEditorSnapshot {
+  format: TemplateFormat;
+  fields: TemplateFieldDefinition[];
+  regions?: { id: string; kind: 'paragraph' | 'table-cell'; text: string; readOnly: boolean }[];
+  placements?: PdfFieldPlacement[];
+  pages?: { page: number; width: number; height: number; rotation: number }[];
+  warnings?: string[];
+}
 
 export interface Contract {
   id: string;
+  reference: string;
   version: number;
   status: ContractStatus;
+  documentType: DocumentType;
+  supplierId: string | null;
+  projectId: string | null;
+  templateFamilyId: string | null;
+  customValues: Record<string, string>;
   values: ContractValues;
   linkedNdaId: string | null;
   linkedNdaHistoricalId: string | null;
   signedVersionId: string | null;
   currentSignedFileId: string | null;
   signedFileCount: number;
+  signedEoiMissing: boolean;
   createdAt: string;
   updatedAt: string;
   signedAt: string | null;
@@ -78,7 +116,39 @@ export interface ContractTemplate {
   fileName: string;
   checksum: string;
   active: boolean;
+  familyId: string | null;
+  documentType: DocumentType;
+  format: TemplateFormat;
+  fieldSchema: TemplateFieldDefinition[];
+  editorSnapshot: TemplateEditorSnapshot | null;
   createdAt: string;
+}
+
+export interface TemplateFamily {
+  id: string;
+  key: string;
+  name: string;
+  documentType: DocumentType;
+  format: TemplateFormat;
+  active: boolean;
+  publishedTemplateId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TemplateDraft {
+  id: string;
+  familyId: string;
+  version: number;
+  name: string;
+  fileName: string;
+  format: TemplateFormat;
+  documentType: DocumentType;
+  editorSnapshot: TemplateEditorSnapshot;
+  checksum: string;
+  sourceSizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ContractValidationIssue {
@@ -94,8 +164,13 @@ export interface ContractVersion {
   templateKey: string;
   templateVersion: string;
   templateChecksum: string;
+  templateFormat: TemplateFormat;
   values: ContractValues;
-  docxArtifactId: string;
+  customValues: Record<string, string>;
+  supplierId: string | null;
+  projectId: string | null;
+  templateFamilyId: string | null;
+  docxArtifactId: string | null;
   pdfArtifactId: string | null;
   complete: boolean;
   createdAt: string;

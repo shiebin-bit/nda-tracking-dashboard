@@ -157,3 +157,44 @@ It returns `{contract, recordId, revision}`. The file must be the current copy f
 - `GET /health/ready`: PostgreSQL readiness
 
 Neither endpoint sends mail or generates a contract.
+
+## Suppliers and projects
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET / POST | `/suppliers` | `{suppliers}` / create `{supplier}` |
+| GET / PATCH | `/suppliers/:id` | Detail with agreement/document links / update `{supplier}` |
+| GET / POST | `/projects` | `{projects}` / create `{project}` |
+| PATCH | `/projects/:id` | Update `{project}` |
+| POST | `/suppliers/:id/assignments` | Explicit versioned agreement/document group assignment |
+| PATCH | `/records/:id/supplier` | `{supplierId, expectedVersion}`; state envelope and History |
+
+Supplier creation accepts `supplierCode`, `companyName`, optional `registrationNumber`, `address` and `contact: {name, designation, address, email}`. Updates include `expectedVersion`. Project creation accepts `name`, optional `projectCode`, `description` and `status` (`active` / `archived`). Codes are text, not numbers. Supplier codes are case-insensitively unique.
+
+Contract creation/update supports `documentType` (`nda` / `eoi`), `supplierId`, `projectId`, `templateFamilyId` and `customValues`, in addition to the existing values. EOI signing returns `recordId: null` and creates no tracking record. PDF-only complete versions have `docxArtifactId: null`.
+
+## Managed templates
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/contract-templates/families` | `{families}` |
+| GET | `/contract-template-drafts` | `{drafts}` |
+| POST | `/contract-templates/import` | Multipart import; 201 `{family, draft}` |
+| PATCH | `/contract-template-drafts/:id` | `{expectedVersion, name, editorSnapshot}`; `{draft}` |
+| GET | `/contract-template-drafts/:id/source` | Original DOCX/PDF; optional `?download=1` |
+| POST | `/contract-template-drafts/:id/preview` | Sample `values` and `customValues`; binary PDF preview |
+| POST | `/contract-template-drafts/:id/publish` | `{requestId, expectedVersion, version, name}`; 201 `{template}` |
+
+Import uses one `file` (DOCX/PDF, maximum 20 MiB), `key` (unique template-family key), `name`, `documentType` and `requestId`. It creates an editable draft, not a published template. Preview must match the current saved draft before publishing. Later draft changes invalidate preview readiness. Published versions and generated files remain immutable.
+
+`editorSnapshot.fields` defines `key`, `label`, `type` (`text`, `number`, `date`), `required` and optional `source`. Word snapshots include protected/editable text `regions`. PDF snapshots include `placements` with `field`, `page` (one-based), `x`, `y`, `width`, `height`, `fontSize`, `align`. Repeated placements can read the same field. Invalid or overflowing placements fail rather than clip.
+
+## Multiple CC compatibility
+
+Settings and delivery responses include `ccEmails: string[]`, with up to ten addresses. Legacy `ccEmail` remains accepted for older backups/clients. Normalization trims, removes duplicates without regard to letter case and excludes the To address. Test submissions always have an empty CC list. Stored deliveries retain the submission's own recipient snapshot.
+
+### Display references and explicit assignments
+
+Agreement and document API resources include `reference` (`AGR-…` / `DOC-…`). They are allocated by the server, unique and immutable; UUID paths and Excel columns remain unchanged. Supplier detail resources include references and document recipient names.
+
+`POST /suppliers/:id/assignments` accepts `{agreements: [{id, expectedVersion}], documents: [{id, expectedVersion}]}`. Include all related active documents/tracking agreements explicitly; omitted related items return `409 related_items_required`. Changes apply in one transaction; stale versions or recycled targets abort the group. The operation changes supplier associations and records audit events without editing document bytes, contract values, agreement fields or reminder settings. Already assigned targets are no-ops, including a response-lost replay.

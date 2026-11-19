@@ -14,7 +14,9 @@ export interface EmailDelivery {
   localDate: string;
   status: 'sending' | 'submitted' | 'failed' | 'unknown' | 'skipped';
   recipientEmail: string;
+  /** @deprecated Use ccEmails. */
   ccEmail: string;
+  ccEmails?: string[];
   senderEmail: string;
   subject: string;
   htmlContent: string;
@@ -39,7 +41,9 @@ export interface ReminderTaskSummary {
 export interface ReminderSummary {
   enabled: boolean;
   recipientEmail: string;
+  /** @deprecated Use ccEmails. */
   ccEmail: string;
+  ccEmails?: string[];
   sendTime: string;
   timeZone: 'Asia/Kuala_Lumpur';
   serverTime: string;

@@ -14,8 +14,11 @@ const completeToc=REQUIRED_TABLES.map(table=>`TABLE DATA public ${table}`).join(
 
 describe('automatic backup worker',()=>{
   it('requires every persisted table including signed PDF copies',()=>{
-    expect(REQUIRED_TABLES).toHaveLength(17);
     expect(REQUIRED_TABLES).toContain('contract_signed_file');
+    expect(REQUIRED_TABLES).toContain('supplier');
+    expect(REQUIRED_TABLES).toContain('project');
+    expect(REQUIRED_TABLES).toContain('template_family');
+    expect(REQUIRED_TABLES).toContain('template_draft');
   });
   it('plans immediate first verification, 15-minute failure retry, and daily MYT slots',()=>{
     const first=empty();

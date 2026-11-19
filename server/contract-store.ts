@@ -6,7 +6,9 @@ import PizZip from 'pizzip';
 import {
   contractValuesFromTracking,
   contractValuesToTracking,
+  createEoiDefaults,
   createFfmContractDefaults,
+  normalizeCustomValues,
   normalizeContractValues,
   templateData,
   validateContractValues,
@@ -20,6 +22,7 @@ import type {
   ContractTemplate,
   ContractValues,
   ContractVersion,
+  DocumentType,
   DocumentArtifact,
   DocumentJob,
   DocumentJobItem,
@@ -30,6 +33,7 @@ import type { RecycledContract } from '../src/recycle-types.js';
 import { withTransaction } from './db.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { renderContractDocx } from './document-worker.js';
+import { inspectDocxTemplate, normalizeFieldSchema, resolveTemplateFields } from './template-render.js';
 import { validateSignedPdf } from './signed-file-upload.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -52,6 +56,37 @@ function expectedVersion(value: unknown): number {
     throw badRequest('expectedVersion must be a positive safe integer.');
   }
   return value as number;
+}
+
+function nullableId(value: unknown, label: string): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'string' || !UUID_PATTERN.test(value)) throw badRequest(`${label} must be a UUID or null.`);
+  return value.toLowerCase();
+}
+
+function nullableTemplateFamilyId(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(value)) {
+    throw badRequest('templateFamilyId is invalid.');
+  }
+  return value;
+}
+
+function requestedDocumentType(value: unknown, fallback: DocumentType = 'nda'): DocumentType {
+  const type = value ?? fallback;
+  if (type !== 'nda' && type !== 'eoi') throw badRequest('documentType must be nda or eoi.');
+  return type;
+}
+
+async function validateAssociations(client: PoolClient, options: {
+  documentType: DocumentType; supplierId: string | null; projectId: string | null; templateFamilyId: string | null;
+}): Promise<void> {
+  if (options.documentType === 'eoi' && (!options.supplierId || !options.projectId)) {
+    throw badRequest('EOI drafts require a supplier and a project.', 'eoi_association_required');
+  }
+  if (options.supplierId && !(await client.query('SELECT 1 FROM supplier WHERE id=$1 AND deleted_at IS NULL', [options.supplierId])).rows[0]) throw badRequest('Supplier was not found.', 'supplier_unavailable');
+  if (options.projectId && !(await client.query('SELECT 1 FROM project WHERE id=$1 AND deleted_at IS NULL', [options.projectId])).rows[0]) throw badRequest('Project was not found.', 'project_unavailable');
+  if (options.templateFamilyId && !(await client.query('SELECT 1 FROM template_family WHERE id=$1 AND active=true AND document_type=$2', [options.templateFamilyId, options.documentType])).rows[0]) throw badRequest('Template family is unavailable for this document type.', 'template_unavailable');
 }
 
 function iso(value: string | Date | null): string | null {
@@ -165,14 +200,21 @@ function mapContract(row: Record<string, any>): Contract {
     ? row.linked_nda_active_id ?? null : row.linked_nda_id ?? null;
   return {
     id: row.id,
+    reference: row.reference_code,
     version: row.version,
     status: row.status,
+    documentType: row.document_type ?? 'nda',
+    supplierId: row.supplier_id ?? null,
+    projectId: row.project_id ?? null,
+    templateFamilyId: row.template_family_id ?? null,
+    customValues: normalizeCustomValues(row.custom_values),
     values: normalizeContractValues(row.values),
     linkedNdaId,
     linkedNdaHistoricalId: row.linked_nda_historical_id ?? null,
     signedVersionId: row.signed_version_id ?? null,
     currentSignedFileId: row.current_signed_file_id ?? null,
     signedFileCount: Number(row.signed_file_count ?? 0),
+    signedEoiMissing: Boolean(row.signed_eoi_missing),
     createdAt: iso(row.created_at)!,
     updatedAt: iso(row.updated_at)!,
     signedAt: iso(row.signed_at),
@@ -216,6 +258,11 @@ function mapTemplate(row: Record<string, any>): ContractTemplate {
     fileName: row.file_name,
     checksum: row.checksum,
     active: row.active,
+    familyId: row.family_id ?? null,
+    documentType: row.document_type ?? 'nda',
+    format: row.template_format ?? 'docx',
+    fieldSchema: row.field_schema ?? [],
+    editorSnapshot: row.editor_snapshot ?? null,
     createdAt: iso(row.created_at)!,
   };
 }
@@ -229,8 +276,13 @@ function mapVersion(row: Record<string, any>): ContractVersion {
     templateKey: row.template_key,
     templateVersion: row.template_version,
     templateChecksum: row.template_checksum,
+    templateFormat: row.template_format ?? 'docx',
     values: normalizeContractValues(row.values_snapshot),
-    docxArtifactId: row.docx_artifact_id,
+    customValues: normalizeCustomValues(row.custom_values_snapshot),
+    supplierId: row.supplier_id_snapshot ?? null,
+    projectId: row.project_id_snapshot ?? null,
+    templateFamilyId: row.template_family_id_snapshot ?? null,
+    docxArtifactId: row.docx_artifact_id ?? null,
     pdfArtifactId: row.pdf_artifact_id ?? null,
     complete: Boolean(row.pdf_artifact_id),
     createdAt: iso(row.created_at)!,
@@ -330,29 +382,63 @@ async function insertContract(
   client: PoolClient,
   values: ContractValues,
   linkedNdaId: string | null = null,
+  options: {
+    documentType?: DocumentType;
+    supplierId?: string | null;
+    projectId?: string | null;
+    templateFamilyId?: string | null;
+    customValues?: Record<string, string>;
+  } = {},
 ): Promise<Contract> {
   const id = randomUUID();
+  const type = options.documentType ?? 'nda';
+  if (type === 'eoi' && (!options.supplierId || !options.projectId)) {
+    throw badRequest('EOI documents require a supplier and project.', 'document_association_required');
+  }
   const result = await client.query(
-    `INSERT INTO contract(id,version,status,values,linked_nda_id,linked_nda_historical_id,created_at,updated_at)
-     VALUES($1,1,'draft',$2::jsonb,$3,$3,now(),now()) RETURNING *`,
-    [id, JSON.stringify(values), linkedNdaId],
+    `INSERT INTO contract(id,version,status,values,linked_nda_id,linked_nda_historical_id,document_type,
+       supplier_id,project_id,template_family_id,custom_values,created_at,updated_at)
+     VALUES($1,1,'draft',$2::jsonb,$3,$3,$4,$5,$6,$7,$8::jsonb,now(),now()) RETURNING *`,
+    [id, JSON.stringify(values), linkedNdaId, type, options.supplierId ?? null, options.projectId ?? null,
+      options.templateFamilyId ?? null, JSON.stringify(options.customValues ?? {})],
   );
-  await addActivity(client, id, 'created', linkedNdaId ? { linkedNdaId } : {});
+  await addActivity(client, id, 'created', {
+    ...(linkedNdaId ? { linkedNdaId } : {}), documentType: type,
+    supplierId: options.supplierId ?? null, projectId: options.projectId ?? null,
+  });
   return mapContract(result.rows[0]);
 }
 
-async function activeTemplate(client: PoolClient, templateId: unknown): Promise<Record<string, any>> {
+async function activeTemplate(
+  client: PoolClient,
+  templateId: unknown,
+  documentType: DocumentType = 'nda',
+  familyId: string | null = null,
+): Promise<Record<string, any>> {
   const result = typeof templateId === 'string' && templateId
-    ? await client.query('SELECT * FROM contract_template WHERE id=$1 AND active=true', [templateId])
-    : await client.query('SELECT * FROM contract_template WHERE active=true ORDER BY created_at DESC,id DESC LIMIT 1');
+    ? await client.query('SELECT * FROM contract_template WHERE id=$1 AND active=true AND document_type=$2', [templateId, documentType])
+    : familyId
+      ? await client.query('SELECT * FROM contract_template WHERE family_id=$1 AND active=true AND document_type=$2 ORDER BY created_at DESC,id DESC LIMIT 1', [familyId, documentType])
+      : await client.query('SELECT * FROM contract_template WHERE active=true AND document_type=$1 ORDER BY created_at DESC,id DESC LIMIT 1', [documentType]);
   if (!result.rows[0]) throw badRequest('No active contract template is available.', 'template_unavailable');
   return result.rows[0];
 }
 
+async function generationCustomValues(client: PoolClient, row: Record<string, any>): Promise<Record<string,string>> {
+  const values = normalizeCustomValues(row.custom_values);
+  if (row.project_id) {
+    const project = await client.query('SELECT name,description FROM project WHERE id=$1 AND deleted_at IS NULL', [row.project_id]);
+    if (project.rows[0]) {
+      values.project_name = String(project.rows[0].name ?? '');
+      values.project_description = String(project.rows[0].description ?? '');
+    }
+  }
+  return values;
+}
+
 async function enqueue(
   client: PoolClient,
-  entries: { row: Record<string, any>; values: ContractValues }[],
-  template: Record<string, any>,
+  entries: { row: Record<string, any>; values: ContractValues; template: Record<string, any>; customValues: Record<string,string> }[],
 ): Promise<string> {
   const jobId = randomUUID();
   await client.query(
@@ -360,13 +446,19 @@ async function enqueue(
     [jobId],
   );
   for (const entry of entries) {
+    const template = entry.template;
+    resolveTemplateFields(entry.values, entry.customValues, template.field_schema ?? []);
     await client.query(
       `INSERT INTO document_job_item(
         id,job_id,contract_id,status,attempts,values_snapshot,template_id,template_key,template_version,
-        template_checksum,template_file_name,template_bytes,created_at,updated_at)
-       VALUES($1,$2,$3,'queued',0,$4::jsonb,$5,$6,$7,$8,$9,$10,now(),now())`,
+        template_checksum,template_file_name,template_bytes,template_format,field_schema,editor_snapshot,
+        custom_values_snapshot,supplier_id_snapshot,project_id_snapshot,template_family_id_snapshot,created_at,updated_at)
+       VALUES($1,$2,$3,'queued',0,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,now(),now())`,
       [randomUUID(), jobId, entry.row.id, JSON.stringify(entry.values), template.id, template.template_key,
-        template.template_version, template.checksum, template.file_name, template.content],
+        template.template_version, template.checksum, template.file_name, template.content,
+        template.template_format ?? 'docx', JSON.stringify(template.field_schema ?? []),
+        template.editor_snapshot ? JSON.stringify(template.editor_snapshot) : null,
+        JSON.stringify(entry.customValues),entry.row.supplier_id??null,entry.row.project_id??null,entry.row.template_family_id??null],
     );
     await addActivity(client, entry.row.id, 'generation-queued', { jobId });
   }
@@ -388,6 +480,10 @@ export async function seedContractTemplates(pool: Pool, directory = 'templates')
   }
   const parsed = JSON.parse(raw) as unknown;
   const definitions = Array.isArray(parsed) ? parsed : isObject(parsed) && Array.isArray(parsed.templates) ? parsed.templates : [parsed];
+  try {
+    const eoi = JSON.parse(await readFile(resolve(directory,'eoi-template-map.json'),'utf8')) as unknown;
+    definitions.push(...(Array.isArray(eoi)?eoi:[eoi]));
+  } catch (error:any) { if(error?.code!=='ENOENT') throw error; }
   for (const item of definitions) {
     if (!isObject(item)) throw new Error('Each contract template definition must be an object.');
     const key = String(item.key ?? item.templateKey ?? item.template ?? '').trim();
@@ -397,17 +493,36 @@ export async function seedContractTemplates(pool: Pool, directory = 'templates')
       ? 'FFM NDA · Disclosing party'
       : key.replace(/[-_]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
     const name = String(item.name ?? defaultName).trim();
-    const tags = Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : [];
+    const managed = item.managed === true;
+    const type = requestedDocumentType(item.documentType, 'nda');
+    const format = item.format === 'pdf' ? 'pdf' : 'docx';
+    const fieldSchema = managed ? normalizeFieldSchema(item.fields ?? []) : [];
+    const tags = managed ? fieldSchema.map((field)=>field.key) : Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === 'string') : [];
     if (!key || !version || !fileName || !name) throw new Error('Template key, version, name, and fileName are required.');
-    const expectedTags = Object.keys(templateData(createFfmContractDefaults())).sort();
-    const actualTags = [...new Set(tags)].sort();
-    if (stable(actualTags) !== stable(expectedTags)) {
-      throw new Error(`Template ${key} must declare exactly the approved contract tags.`);
+    if (!managed) {
+      const expectedTags = Object.keys(templateData(createFfmContractDefaults())).sort();
+      const actualTags = [...new Set(tags)].sort();
+      if (stable(actualTags) !== stable(expectedTags)) throw new Error(`Template ${key} must declare exactly the approved contract tags.`);
     }
     const content = await readFile(resolve(directory, fileName));
-    validateContractTemplatePackage(content, item);
+    let editorSnapshot: unknown = null;
+    if (managed) {
+      if (format !== 'docx') throw new Error('Packaged managed PDF templates are not supported by this seed path.');
+      const inspected=inspectDocxTemplate(content);
+      const detected=new Set(inspected.fields.map((field)=>field.key));
+      for(const field of fieldSchema) if(!detected.has(field.key)) throw new Error(`Template ${key} does not contain declared field ${field.key}.`);
+      inspected.fields=fieldSchema; editorSnapshot=inspected;
+    } else validateContractTemplatePackage(content, item);
     const checksum = createHash('sha256').update(content).digest('hex');
     await withTransaction(pool, async (client) => {
+      const familyKey = String(item.familyKey ?? (key === 'ffm-nda-v1' ? 'ffm-nda' : key));
+      const preferredFamilyId = key === 'ffm-nda-v1' ? 'legacy-ffm-nda-family' : randomUUID();
+      await client.query(
+        `INSERT INTO template_family(id,family_key,name,document_type,template_format,active,created_at,updated_at)
+         VALUES($1,$2,$3,$4,$5,true,now(),now()) ON CONFLICT (family_key) DO NOTHING`,
+        [preferredFamilyId, familyKey, name,type,format],
+      );
+      const family = await client.query('SELECT id,published_template_id FROM template_family WHERE family_key=$1 FOR UPDATE', [familyKey]);
       const existing = await client.query(
         'SELECT id,checksum FROM contract_template WHERE template_key=$1 AND template_version=$2 FOR UPDATE',
         [key, version],
@@ -415,15 +530,32 @@ export async function seedContractTemplates(pool: Pool, directory = 'templates')
       if (existing.rows[0] && existing.rows[0].checksum !== checksum) {
         throw new Error(`Template ${key} ${version} already exists with different bytes.`);
       }
-      await client.query('UPDATE contract_template SET active=false WHERE template_key=$1', [key]);
-      if (existing.rows[0]) {
-        await client.query('UPDATE contract_template SET active=true WHERE id=$1', [existing.rows[0].id]);
-      } else {
+      let insertedId: string | null = null;
+      if (!existing.rows[0]) {
+        insertedId = randomUUID();
+        const activateInitial = !family.rows[0].published_template_id;
         await client.query(
-          `INSERT INTO contract_template(id,template_key,template_version,name,file_name,content,checksum,tags,active)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,true)`,
-          [randomUUID(), key, version, name, fileName, content, checksum, JSON.stringify(tags)],
+          `INSERT INTO contract_template(id,template_key,template_version,name,file_name,content,checksum,tags,active,
+             family_id,document_type,template_format,field_schema,editor_snapshot)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13::jsonb,$14::jsonb)`,
+          [insertedId, key, version, name, fileName, content, checksum, JSON.stringify(tags), activateInitial, family.rows[0].id,
+            type,format,JSON.stringify(managed?fieldSchema:tags.map((tag) => ({ key: tag, label: tag.replace(/_/g, ' '), type: 'text', required: false, source: tag }))),
+            editorSnapshot?JSON.stringify(editorSnapshot):null],
         );
+      }
+      if (!family.rows[0].published_template_id) {
+        await client.query('UPDATE template_family SET published_template_id=$2,updated_at=now() WHERE id=$1',
+          [family.rows[0].id, existing.rows[0]?.id ?? insertedId]);
+      }
+      // Keep an editable working copy of each packaged template, without resetting user edits.
+      if (!(await client.query('SELECT 1 FROM template_draft WHERE family_id=$1', [family.rows[0].id])).rows[0]) {
+        const published = (await client.query('SELECT * FROM contract_template WHERE id=$1',
+          [family.rows[0].published_template_id ?? existing.rows[0]?.id ?? insertedId])).rows[0];
+        const snapshot = published.editor_snapshot ?? inspectDocxTemplate(published.content);
+        if (published.field_schema?.length) snapshot.fields = published.field_schema;
+        await client.query(`INSERT INTO template_draft(id,family_id,version,name,file_name,source_content,source_checksum,editor_snapshot)
+          VALUES($1,$2,1,$3,$4,$5,$6,$7::jsonb)`,
+        [randomUUID(),family.rows[0].id,published.name,published.file_name,published.content,published.checksum,JSON.stringify(snapshot)]);
       }
     });
   }
@@ -440,6 +572,9 @@ export class PgContractStore {
   async listContracts(): Promise<ContractListItem[]> {
     const result = await this.pool.query(`SELECT c.*,n.id linked_nda_active_id,n.deleted_at linked_nda_deleted_at,
       (SELECT count(*)::integer FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count,
+      (c.document_type='nda' AND c.supplier_id IS NOT NULL AND c.project_id IS NOT NULL AND NOT EXISTS(
+        SELECT 1 FROM contract eoi WHERE eoi.document_type='eoi' AND eoi.status='signed'
+          AND eoi.deleted_at IS NULL AND eoi.supplier_id=c.supplier_id AND eoi.project_id=c.project_id)) signed_eoi_missing,
       latest_generation.id latest_generation_id,latest_generation.ordinal latest_generation_ordinal,
       latest_generation.job_id latest_generation_job_id,
       latest_generation.complete latest_generation_complete,
@@ -447,7 +582,11 @@ export class PgContractStore {
       FROM contract c LEFT JOIN nda_record n ON n.id=c.linked_nda_id AND n.deleted_at IS NULL
       LEFT JOIN LATERAL (
         SELECT cv.id,cv.ordinal,(cv.pdf_artifact_id IS NOT NULL) complete,
-          (cv.values_snapshot = c.values) matches_draft,
+          (cv.values_snapshot = c.values AND cv.custom_values_snapshot=(c.custom_values || COALESCE(
+            (SELECT jsonb_build_object('project_name',p.name,'project_description',p.description) FROM project p WHERE p.id=c.project_id AND p.deleted_at IS NULL),'{}'::jsonb))
+           AND cv.supplier_id_snapshot IS NOT DISTINCT FROM c.supplier_id
+           AND cv.project_id_snapshot IS NOT DISTINCT FROM c.project_id
+           AND cv.template_family_id_snapshot IS NOT DISTINCT FROM c.template_family_id) matches_draft,
           (SELECT item.job_id FROM document_job_item item WHERE item.version_id=cv.id
            ORDER BY item.created_at DESC,item.id DESC LIMIT 1) job_id
         FROM contract_version cv WHERE cv.contract_id=c.id
@@ -472,7 +611,10 @@ export class PgContractStore {
     try {
       await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const contractResult = await client.query(`SELECT c.*,n.id linked_nda_active_id,n.deleted_at linked_nda_deleted_at,
-        (SELECT count(*)::integer FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count
+        (SELECT count(*)::integer FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count,
+        (c.document_type='nda' AND c.supplier_id IS NOT NULL AND c.project_id IS NOT NULL AND NOT EXISTS(
+          SELECT 1 FROM contract eoi WHERE eoi.document_type='eoi' AND eoi.status='signed'
+            AND eoi.deleted_at IS NULL AND eoi.supplier_id=c.supplier_id AND eoi.project_id=c.project_id)) signed_eoi_missing
         FROM contract c LEFT JOIN nda_record n ON n.id=c.linked_nda_id AND n.deleted_at IS NULL WHERE c.id=$1`, [id]);
       if (!contractResult.rows[0]) throw notFound('Contract was not found.');
       if (contractResult.rows[0].deleted_at) throw conflict('This contract is in the Recycle Bin.', 'contract_recycled');
@@ -504,11 +646,15 @@ export class PgContractStore {
   async create(input: unknown): Promise<{ contract: Contract }> {
     if (!isObject(input)) throw badRequest('Request body must be an object.');
     const rid = requestId(input.requestId);
-    const validation = validateContractValues(input.values ?? createFfmContractDefaults(), 'draft');
+    const type = requestedDocumentType(input.documentType);
+    const validation = validateContractValues(input.values ?? (type === 'eoi' ? createEoiDefaults() : createFfmContractDefaults()), 'draft');
     if (validation.errors.length) throw badRequest(validation.errors.map((issue) => issue.message).join(' '), 'validation_failed');
-    return withTransaction(this.pool, (client) => idempotent(client, rid, 'contract.create', input, async () => ({
-      contract: await insertContract(client, validation.values),
-    })));
+    const options = { documentType:type, supplierId:nullableId(input.supplierId,'supplierId'), projectId:nullableId(input.projectId,'projectId'), templateFamilyId:nullableTemplateFamilyId(input.templateFamilyId) };
+    const customValues = normalizeCustomValues(input.customValues);
+    return withTransaction(this.pool, (client) => idempotent(client, rid, 'contract.create', input, async () => {
+      await validateAssociations(client, options);
+      return { contract: await insertContract(client, validation.values, null, {...options,customValues}) };
+    }));
   }
 
   async recycle(id: string, input: unknown): Promise<{ contract: RecycledContract }> {
@@ -545,10 +691,20 @@ export class PgContractStore {
     if (validation.errors.length) throw badRequest(validation.errors.map((issue) => issue.message).join(' '), 'validation_failed');
     return withTransaction(this.pool, async (client) => {
       const row = await lockedContract(client, id); checkVersion(row, version); ensureDraft(row);
-      if (stable(normalizeContractValues(row.values)) === stable(validation.values)) return { contract: mapContract(row) };
+      const options = {
+        documentType: requestedDocumentType(input.documentType,row.document_type ?? 'nda'),
+        supplierId: Object.hasOwn(input,'supplierId') ? nullableId(input.supplierId,'supplierId') : row.supplier_id ?? null,
+        projectId: Object.hasOwn(input,'projectId') ? nullableId(input.projectId,'projectId') : row.project_id ?? null,
+        templateFamilyId: Object.hasOwn(input,'templateFamilyId') ? nullableTemplateFamilyId(input.templateFamilyId) : row.template_family_id ?? null,
+      };
+      if (options.documentType !== (row.document_type ?? 'nda')) throw conflict('Document type cannot be changed after a draft is created.', 'document_type_immutable');
+      await validateAssociations(client,options);
+      const customValues = Object.hasOwn(input,'customValues') ? normalizeCustomValues(input.customValues) : normalizeCustomValues(row.custom_values);
+      if (stable({values:normalizeContractValues(row.values),supplierId:row.supplier_id??null,projectId:row.project_id??null,templateFamilyId:row.template_family_id??null,customValues:normalizeCustomValues(row.custom_values)})
+        === stable({values:validation.values,supplierId:options.supplierId,projectId:options.projectId,templateFamilyId:options.templateFamilyId,customValues})) return { contract: mapContract(row) };
       const result = await client.query(
-        `UPDATE contract SET version=version+1,values=$2::jsonb,updated_at=now() WHERE id=$1 RETURNING *`,
-        [id, JSON.stringify(validation.values)],
+        `UPDATE contract SET version=version+1,values=$2::jsonb,supplier_id=$3,project_id=$4,template_family_id=$5,custom_values=$6::jsonb,updated_at=now() WHERE id=$1 RETURNING *`,
+        [id, JSON.stringify(validation.values),options.supplierId,options.projectId,options.templateFamilyId,JSON.stringify(customValues)],
       );
       await addActivity(client, id, 'updated');
       return { contract: mapContract({ ...row, ...result.rows[0] }) };
@@ -560,7 +716,10 @@ export class PgContractStore {
     const rid = requestId(input.requestId);
     return withTransaction(this.pool, (client) => idempotent(client, rid, `contract.duplicate:${id}`, input, async () => {
       const source = await lockedContract(client, id);
-      return { contract: await insertContract(client, normalizeContractValues(source.values)) };
+      return { contract: await insertContract(client, normalizeContractValues(source.values),null,{
+        documentType:source.document_type??'nda',supplierId:source.supplier_id??null,projectId:source.project_id??null,
+        templateFamilyId:source.template_family_id??null,customValues:normalizeCustomValues(source.custom_values),
+      }) };
     }));
   }
 
@@ -597,11 +756,13 @@ export class PgContractStore {
         error.details = { contractId: existing.rows[0].id };
         throw error;
       }
-      const nda = await client.query('SELECT id,fields,deleted_at FROM nda_record WHERE id=$1 FOR UPDATE', [ndaId]);
+      const nda = await client.query('SELECT id,fields,deleted_at,supplier_id FROM nda_record WHERE id=$1 FOR UPDATE', [ndaId]);
       if (!nda.rows[0]) throw notFound('NDA record was not found.');
       if (nda.rows[0].deleted_at) throw conflict('This NDA record is in the Recycle Bin.', 'record_recycled');
       if (existing.rows[0]) return { contract: mapContract(existing.rows[0]) };
-      return { contract: await insertContract(client, contractValuesFromTracking(nda.rows[0].fields), ndaId) };
+      return { contract: await insertContract(client, contractValuesFromTracking(nda.rows[0].fields), ndaId,{
+        documentType:'nda',supplierId:nda.rows[0].supplier_id??null,
+      }) };
     }));
   }
 
@@ -642,41 +803,48 @@ export class PgContractStore {
     const rid = requestId(input.requestId); const version = expectedVersion(input.expectedVersion);
     const result = await withTransaction(this.pool, (client) => idempotent(client, rid, `contract.generate:${id}`, input, async () => {
       const row = await lockedContract(client, id); checkVersion(row, version); ensureDraft(row);
-      const validation = validateContractValues(row.values, 'export');
+      const type = requestedDocumentType(row.document_type);
+      const validation = validateContractValues(row.values, type === 'nda' ? 'export' : 'draft');
       if (validation.errors.length) throw badRequest(validation.errors.map((issue) => `${issue.field}: ${issue.message}`).join(' '), 'validation_failed');
-      const template = await activeTemplate(client, input.templateId);
-      return { jobId: await enqueue(client, [{ row, values: validation.values }], template) };
+      await validateAssociations(client,{documentType:type,supplierId:row.supplier_id??null,projectId:row.project_id??null,templateFamilyId:row.template_family_id??null});
+      const template = await activeTemplate(client, input.templateId, type, row.template_family_id ?? null);
+      return { jobId: await enqueue(client, [{ row, values: validation.values, template,customValues:await generationCustomValues(client,row) }]) };
     }));
     return { job: await this.getJob(result.jobId) };
   }
 
   async enqueueBatch(input: unknown): Promise<{ job: DocumentJob }> {
     if (!isObject(input) || !Array.isArray(input.contracts)) throw badRequest('contracts must be an array.');
+    const batchContracts = input.contracts as unknown[];
     const rid = requestId(input.requestId);
     if (input.contracts.length < 1 || input.contracts.length > MAX_BATCH_SIZE) {
       throw badRequest(`A document batch must contain 1 to ${MAX_BATCH_SIZE} contracts.`);
     }
-    const requested = input.contracts.map((item) => {
+    const requested = batchContracts.map((item) => {
       if (!isObject(item) || typeof item.id !== 'string' || !item.id) throw badRequest('Every batch contract must include an id.');
       return { id: item.id, expectedVersion: expectedVersion(item.expectedVersion) };
     });
     if (new Set(requested.map((item) => item.id)).size !== requested.length) throw badRequest('Batch contract IDs must be unique.');
     const result = await withTransaction(this.pool, (client) => idempotent(client, rid, 'document.batch', input, async () => {
-      const template = await activeTemplate(client, input.templateId);
-      if (Number(template.content.length) * requested.length > MAX_BATCH_BYTES) {
-        throw badRequest('The batch exceeds the 250 MiB frozen-template limit.', 'batch_too_large');
-      }
-      const entries: { row: Record<string, any>; values: ContractValues }[] = [];
+      const entries: { row: Record<string, any>; values: ContractValues; template: Record<string, any>; customValues: Record<string,string> }[] = [];
+      let frozenBytes = 0;
       for (const requestedContract of requested) {
         const row = await lockedContract(client, requestedContract.id);
         checkVersion(row, requestedContract.expectedVersion); ensureDraft(row);
-        const validation = validateContractValues(row.values, 'export');
+        const type = requestedDocumentType(row.document_type);
+        const validation = validateContractValues(row.values, type === 'nda' ? 'export' : 'draft');
         if (validation.errors.length) {
           throw badRequest(`Contract ${row.id}: ${validation.errors.map((issue) => issue.message).join(' ')}`, 'validation_failed');
         }
-        entries.push({ row, values: validation.values });
+        await validateAssociations(client,{documentType:type,supplierId:row.supplier_id??null,projectId:row.project_id??null,templateFamilyId:row.template_family_id??null});
+        const selected = batchContracts.find((candidate: unknown) => isObject(candidate) && candidate.id === row.id);
+        const item = isObject(selected) ? selected : {};
+        const template = await activeTemplate(client, item.templateId ?? input.templateId, type, row.template_family_id ?? null);
+        frozenBytes += Number(template.content.length);
+        if (frozenBytes > MAX_BATCH_BYTES) throw badRequest('The batch exceeds the 250 MiB frozen-template limit.', 'batch_too_large');
+        entries.push({ row, values: validation.values, template,customValues:await generationCustomValues(client,row) });
       }
-      return { jobId: await enqueue(client, entries, template) };
+      return { jobId: await enqueue(client, entries) };
     }));
     return { job: await this.getJob(result.jobId) };
   }
@@ -732,11 +900,14 @@ export class PgContractStore {
         await client.query(
           `INSERT INTO document_job_item(
             id,job_id,contract_id,status,attempts,values_snapshot,template_id,template_key,template_version,
-            template_checksum,template_file_name,template_bytes,docx_artifact_id,created_at,updated_at)
-           VALUES($1,$2,$3,'queued',0,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,now(),now())`,
+            template_checksum,template_file_name,template_bytes,docx_artifact_id,template_format,field_schema,editor_snapshot,
+            custom_values_snapshot,supplier_id_snapshot,project_id_snapshot,template_family_id_snapshot,created_at,updated_at)
+           VALUES($1,$2,$3,'queued',0,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15::jsonb,$16,$17,$18,now(),now())`,
           [randomUUID(), jobId, item.contract_id, JSON.stringify(item.values_snapshot), item.template_id,
             item.template_key, item.template_version, item.template_checksum, item.template_file_name,
-            item.template_bytes, item.docx_artifact_id],
+            item.template_bytes, item.docx_artifact_id,item.template_format??'docx',JSON.stringify(item.field_schema??[]),
+            item.editor_snapshot?JSON.stringify(item.editor_snapshot):null,JSON.stringify(item.custom_values_snapshot??{}),
+            item.supplier_id_snapshot??null,item.project_id_snapshot??null,item.template_family_id_snapshot??null],
         );
         await addActivity(client, item.contract_id, 'generation-retried', { sourceJobId: id, jobId });
       }
@@ -859,7 +1030,7 @@ export class PgContractStore {
     return { ...mapSignedFile(result.rows[0]), content: result.rows[0].content };
   }
 
-  async confirmSigned(id: string, input: unknown): Promise<{ contract: Contract; recordId: string; revision: string }> {
+  async confirmSigned(id: string, input: unknown): Promise<{ contract: Contract; recordId: string | null; revision: string }> {
     if (!isObject(input)) throw badRequest('Request body must be an object.');
     const rid = requestId(input.requestId); const version = expectedVersion(input.expectedVersion);
     if (typeof input.versionId !== 'string' || !input.versionId) throw badRequest('versionId is required.');
@@ -886,7 +1057,25 @@ export class PgContractStore {
       if (!generated.rows[0] || !generated.rows[0].pdf_artifact_id) {
         throw badRequest('A complete generated version must be selected.', 'incomplete_version');
       }
+      // Supplier ID is website-only classification metadata and is intentionally not
+      // embedded in generated files. An explicit reassignment made after generation
+      // must survive confirmation; the immutable generation snapshot remains audit
+      // evidence of the association that existed when the file was produced.
+      const signedSupplierId=row.supplier_id??null;
+      const signedProjectId=generated.rows[0].project_id_snapshot??null;
+      const signedFamilyId=generated.rows[0].template_family_id_snapshot??null;
+      const signedCustomValues=normalizeCustomValues(generated.rows[0].custom_values_snapshot);
       const values = normalizeContractValues(generated.rows[0].values_snapshot);
+      if ((row.document_type ?? 'nda') === 'eoi') {
+        const updated = await client.query(
+          `UPDATE contract SET version=version+1,status='signed',values=$2::jsonb,signed_version_id=$3,
+             supplier_id=$4,project_id=$5,template_family_id=$6,custom_values=$7::jsonb,signed_at=now(),updated_at=now()
+             WHERE id=$1 RETURNING *`,
+          [id,JSON.stringify(values),input.versionId,signedSupplierId,signedProjectId,signedFamilyId,JSON.stringify(signedCustomValues)],
+        );
+        await addActivity(client,id,'signed-confirmed',{versionId:input.versionId,documentType:'eoi'});
+        return {contract:mapContract({...row,...updated.rows[0]}),recordId:null,revision:workspace.rows[0].revision};
+      }
       const manualDate = typeof input.agreementDate === 'string' ? input.agreementDate.trim() : '';
       const manualPic = typeof input.pic === 'string' ? input.pic.trim() : '';
       if (!values.agreementDate && manualDate) values.agreementDate = manualDate;
@@ -899,9 +1088,12 @@ export class PgContractStore {
       let recordId: string;
       let revision: string;
       if (row.linked_nda_id) {
-        const record = await client.query('SELECT id,fields,deleted_at FROM nda_record WHERE id=$1 FOR UPDATE', [row.linked_nda_id]);
+        const record = await client.query('SELECT id,fields,deleted_at,supplier_id FROM nda_record WHERE id=$1 FOR UPDATE', [row.linked_nda_id]);
         if (!record.rows[0]) throw conflict('The linked NDA is unavailable.', 'linked_nda_unavailable');
         if (record.rows[0].deleted_at) throw conflict('The linked NDA is in the Recycle Bin.', 'linked_nda_recycled');
+        if (signedSupplierId && record.rows[0].supplier_id && signedSupplierId !== record.rows[0].supplier_id) {
+          throw conflict('The linked NDA belongs to a different supplier.', 'supplier_mismatch');
+        }
         const differences = Object.entries(mapped).flatMap(([field, expected]) => {
           const actual = record.rows[0].fields[field];
           return normalizedCompare(actual) === normalizedCompare(expected) ? [] : [{ field, expected, actual }];
@@ -920,9 +1112,9 @@ export class PgContractStore {
           COALESCE((SELECT max(position) FROM nda_record),0)::text record,
           COALESCE((SELECT max(position) FROM history_event),0)::text history`);
         await client.query(
-          `INSERT INTO nda_record(id,position,version,source,created_at,updated_at,fields,fingerprint)
-           VALUES($1,$2,1,'manual',now(),now(),$3::jsonb,$4)`,
-          [recordId, Number(positions.rows[0].record) + 1, JSON.stringify(fields), fingerprint(fields)],
+          `INSERT INTO nda_record(id,position,version,source,created_at,updated_at,fields,fingerprint,supplier_id)
+           VALUES($1,$2,1,'manual',now(),now(),$3::jsonb,$4,$5)`,
+          [recordId, Number(positions.rows[0].record) + 1, JSON.stringify(fields), fingerprint(fields),signedSupplierId],
         );
         await client.query(
           `INSERT INTO history_event(id,position,nda_id,type,timestamp,actor,summary,changes)
@@ -937,9 +1129,10 @@ export class PgContractStore {
       }
       const updated = await client.query(
         `UPDATE contract SET version=version+1,status='signed',values=$2::jsonb,linked_nda_id=$3,
-          linked_nda_historical_id=COALESCE(linked_nda_historical_id,$3),signed_version_id=$4,signed_at=now(),updated_at=now()
+          linked_nda_historical_id=COALESCE(linked_nda_historical_id,$3),signed_version_id=$4,
+          supplier_id=$5,project_id=$6,template_family_id=$7,custom_values=$8::jsonb,signed_at=now(),updated_at=now()
          WHERE id=$1 RETURNING *`,
-        [id, JSON.stringify(values), recordId, input.versionId],
+        [id, JSON.stringify(values), recordId, input.versionId,signedSupplierId,signedProjectId,signedFamilyId,JSON.stringify(signedCustomValues)],
       );
       await addActivity(client, id, 'signed-confirmed', { versionId: input.versionId, recordId });
       return { contract: mapContract({ ...row, ...updated.rows[0] }), recordId, revision };

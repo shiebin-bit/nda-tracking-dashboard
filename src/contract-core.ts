@@ -50,6 +50,13 @@ export function createFfmContractDefaults(): ContractValues {
   };
 }
 
+export function createEoiDefaults(): ContractValues {
+  const values = createFfmContractDefaults();
+  values.duration = null;
+  values.purpose = '';
+  return values;
+}
+
 function normalizedString(value: unknown): string {
   return typeof value === 'string' ? value.normalize('NFC').trim() : '';
 }
@@ -258,7 +265,7 @@ export function englishDate(value: string | null): string {
     .format(new Date(Date.UTC(year, month - 1, day)));
 }
 
-export function templateData(values: ContractValues): Record<string, string> {
+export function templateData(values: ContractValues, customValues: Record<string, string> = {}): Record<string, string> {
   const side = (prefix: 'discloser' | 'recipient', party: ContractParty) => ({
     [`${prefix}_name`]: party.name,
     [`${prefix}_registration`]: party.registrationNumber,
@@ -272,11 +279,27 @@ export function templateData(values: ContractValues): Record<string, string> {
     [`${prefix}_witness_name`]: party.witness.name,
     [`${prefix}_witness_designation`]: party.witness.designation,
   });
+  const custom = Object.fromEntries(Object.entries(customValues).map(([key, value]) => {
+    const normalized = normalizedString(value);
+    return [key, key === 'document_date' ? (englishDate(normalized) || normalized) : normalized];
+  }));
   return {
+    ...custom,
     ...side('discloser', values.discloser),
     ...side('recipient', values.recipient),
     purpose: values.purpose,
     agreement_date: englishDate(values.agreementDate),
     duration_text: durationText(values.duration),
   };
+}
+
+export function normalizeCustomValues(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const normalized: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^[a-z][a-z0-9_]{0,63}$/i.test(key)) continue;
+    const text = normalizedString(raw);
+    if (text.length <= MAX_TEXT) normalized[key] = text;
+  }
+  return normalized;
 }

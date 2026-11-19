@@ -74,3 +74,9 @@ Complete `.dump` files capture all database modules, including binary documents 
 The HTTP layer checks allowed Host and same-origin requests, restricts static-file paths, requires JSON for ordinary mutations, limits request sizes and applies CSP/security headers. Signed uploads have a separate bounded multipart parser and PDF validation. These checks support the local deployment; they do not provide login, malware scanning, an electronic signature service, or internet-facing authorization.
 
 Before a shared/server deployment, define authentication, authorization, HTTPS, file access, secret management, backup storage and availability separately. Do not publish the current localhost service directly and assume repository privacy protects the running API.
+
+## Supplier and template extensions
+
+Migrations008 and009 add supplier/project masters, optional links on legacy records, versioned template families and editable drafts. Published template bytes and generated metadata are immutable. Jobs freeze the chosen template, custom values and supplier/project associations before running. EOI shares document/signature storage but never writes an NDA record or reserves a reminder task. PDF templates render fields with PDF-LIB and have no DOCX artifact.
+
+Complete backups include these tables and source binaries. The backup service waits for application readiness, including completed migrations, before validating its initial dump. CC arrays are normalized with legacy single-address compatibility and are frozen in each delivery snapshot.

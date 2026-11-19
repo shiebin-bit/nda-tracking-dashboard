@@ -1,0 +1,10 @@
+import {useState,type KeyboardEvent} from 'react';
+import {Plus,X} from 'lucide-react';
+const EMAIL=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function CcEmailEditor({emails,recipient,disabled,onChange,onError}:{emails:string[];recipient:string;disabled:boolean;onChange:(emails:string[])=>void;onError:(message:string)=>void}){
+  const [value,setValue]=useState('');
+  const add=()=>{const email=value.trim();if(!email)return;if(!EMAIL.test(email)){onError('Enter a valid CC email address.');return;}if(email.localeCompare(recipient.trim(),undefined,{sensitivity:'accent'})===0){onError('The reminder recipient cannot also be a CC recipient.');return;}if(emails.some(item=>item.toLocaleLowerCase()===email.toLocaleLowerCase())){onError('That CC email is already added.');return;}if(emails.length>=10){onError('Add up to 10 CC recipients.');return;}onChange([...emails,email]);setValue('');onError('');};
+  const keyDown=(event:KeyboardEvent<HTMLInputElement>)=>{if((event.key==='Enter'||event.key===','||event.key===';')&&value.trim()){event.preventDefault();add();}};
+  return <div className="field cc-editor"><label htmlFor="cc-email-entry">CC recipients <span className="optional">optional · up to 10</span></label><div className="cc-chip-box">{emails.map(email=><span className="cc-chip" key={email}>{email}<button type="button" disabled={disabled} onClick={()=>onChange(emails.filter(item=>item!==email))} aria-label={`Remove CC ${email}`}><X size={12}/></button></span>)}<input id="cc-email-entry" type="email" disabled={disabled||emails.length>=10} value={value} onChange={e=>setValue(e.target.value)} onKeyDown={keyDown} onBlur={()=>{if(value.trim())add();}} placeholder={emails.length?'Add another email':'name@example.com'}/><button type="button" className="icon-button" disabled={disabled||!value.trim()||emails.length>=10} onMouseDown={e=>e.preventDefault()} onClick={add} aria-label="Add CC recipient"><Plus size={15}/></button></div><small>CC recipients can see each other. Press Enter after each address.</small></div>;
+}

@@ -119,4 +119,20 @@ Host `127.0.0.1`、Port `5433`、Database `nda_tracker`、User `nda_app`。密�
 
 ## 当前版本没有包括
 
-多人账号/权限、电子签名、任意 Word 模板编辑、照片合并签署件、自动识别签名、云端长期在线部署。正式多人使用或开放互联网前，需要额外设计访问控制和部署。
+多人账号/权限、电子签名、完整 Word 排版编辑器、照片合并签署件、自动识别签名、云端长期在线部署。正式多人使用或开放互联网前，需要额外设计访问控制和部署。
+
+## Supplier、项目和模板
+
+在 Suppliers 建立现有 Supplier ID；请保留前导零。旧 agreement 需手动关联，不会按公司名称自动合并。同一 supplier 可关联多个项目，并集中查看 NDA 与 EOI。Supplier ID 只用于网站，不放进合同或原格式 Excel 导出。
+
+Contracts 可选择 NDA 或 EOI、supplier、项目及已发布模板。EOI 确认签署只保存签署状态，不产生 NDA tracking 或到期提醒。同项目缺少已签 EOI 时会提示，但仍可继续 NDA。
+
+Templates 支持导入 Word、PDF。Word 可按段落或表格单元格改文字和字段；PDF 保留原页面，在指定位置填写字段。先保存、预览，再发布新版，旧文件不变。PDF 模板只生成 PDF，不提供 Word 下载。每份文件最大 20 MiB。
+
+Settings 的 CC 可逐个添加最多十个邮箱；重复及与 To 相同的地址会排除。正式邮件会显示 CC 名单，测试邮件不抄送。完整说明见 [Supplier 和模板指南](SUPPLIERS_AND_TEMPLATES.md)。
+
+## 新增文件与现有资料归类
+
+Documents 统一使用 **New document**，先选已发布模板，再填写 supplier、项目及文件资料。Supplier 详情的 **Assign existing items** 可搜索、多选现有 document 或 agreement，提交前会列出关联 tracking 与文件的完整归类清单；已归到别的 Supplier 的项目会明确提示。
+
+现有及新增 agreement 自动取得 `AGR-000001` 这类网站编号；document 使用 `DOC-000001`。编号在编辑、归类、删除恢复后保持不变，可用来搜索。原 Excel 编号、26栏、数据库ID及合同文件内容不受影响。
