@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Pool, PoolClient } from 'pg';
+import type { Pool, PoolClient } from './db.js';
 import { dateLabel, derive, getCandidates, todayMY, type NdaRecord, type Settings } from '../src/core.js';
 import type { EmailDelivery, EmailStatus, ReminderSummary, ReminderTaskSummary } from '../src/email-types.js';
 import type { ServerConfig } from './config.js';
@@ -48,7 +48,7 @@ type SummaryTaskRow = {
   updated_at: string | Date;
   error: string | null;
 };
-const DELIVERY_COLUMNS = `id,kind,local_date::text AS local_date,status,recipient_email,cc_email,cc_emails,
+const DELIVERY_COLUMNS = `id,kind,CAST(local_date AS TEXT) AS local_date,status,recipient_email,cc_email,cc_emails,
   sender_email,subject,html_content,record_count,created_at,updated_at,message_id,error,attempts`;
 
 function iso(value: string | Date): string {
@@ -272,12 +272,13 @@ export class BrevoClient {
 }
 
 async function deliveryById(client: Pool | PoolClient, id: string, lock = false): Promise<EmailDelivery | null> {
-  const result = await client.query<DeliveryRow>(`SELECT ${DELIVERY_COLUMNS} FROM email_delivery WHERE id=$1${lock ? ' FOR UPDATE' : ''}`, [id]);
+  // Transaction callers already hold the database-wide BEGIN IMMEDIATE writer lock.
+  const result = await client.query<DeliveryRow>(`SELECT ${DELIVERY_COLUMNS} FROM email_delivery WHERE id=$1`, [id]);
   return result.rows[0] ? mapDelivery(result.rows[0]) : null;
 }
 
 async function records(client: PoolClient): Promise<NdaRecord[]> {
-  const result = await client.query(`SELECT id::text,version,source,created_at,updated_at,renewed_from_id::text,fields
+  const result = await client.query(`SELECT CAST(id AS TEXT) id,version,source,created_at,updated_at,CAST(renewed_from_id AS TEXT) renewed_from_id,fields
     FROM nda_record WHERE deleted_at IS NULL ORDER BY position ASC`);
   return result.rows.map((row) => ({
     id: row.id, version: row.version, source: row.source, fields: row.fields,
@@ -287,7 +288,7 @@ async function records(client: PoolClient): Promise<NdaRecord[]> {
 }
 
 async function currentSettings(client: PoolClient, lock = false): Promise<Settings> {
-  const result = await client.query<{ settings: unknown }>(`SELECT settings FROM workspace WHERE id=1${lock ? ' FOR UPDATE' : ''}`);
+  const result = await client.query<{ settings: unknown }>('SELECT settings FROM workspace WHERE id=1');
   if (!result.rows[0]) throw new Error('Database workspace is not initialized.');
   return normalizeSettings(result.rows[0].settings, true);
 }
@@ -296,7 +297,7 @@ async function insertDelivery(client: PoolClient, delivery: EmailDelivery): Prom
   await client.query(`INSERT INTO email_delivery(
     id,kind,local_date,status,recipient_email,cc_email,cc_emails,sender_email,subject,html_content,
     record_count,created_at,updated_at,message_id,error,attempts
-  ) VALUES($1,$2,$3,$4,$5,$6,$7::text[],$8,$9,$10,$11,$12,$13,$14,$15,$16)`, [
+  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, [
     delivery.id, delivery.kind, delivery.localDate, delivery.status, delivery.recipientEmail,
     delivery.ccEmail, delivery.ccEmails ?? (delivery.ccEmail ? [delivery.ccEmail] : []), delivery.senderEmail, delivery.subject, delivery.htmlContent,
     delivery.recordCount, delivery.createdAt, delivery.updatedAt, delivery.messageId,
@@ -313,9 +314,9 @@ export class PgEmailStore {
       const changed = await client.query<{ id: string }>(`UPDATE email_delivery
         SET status='unknown',error='Submission outcome is unknown after an interrupted sending attempt.',updated_at=$1
         WHERE status='sending' AND updated_at <= $2 RETURNING id`, [now.toISOString(), threshold]);
-      if (changed.rows.length) {
+      for (const row of changed.rows) {
         await client.query(`UPDATE email_job SET status='unknown',updated_at=$1
-          WHERE delivery_id = ANY($2::text[]) AND status='sending'`, [now.toISOString(), changed.rows.map((row) => row.id)]);
+          WHERE delivery_id=$2 AND status='sending'`, [now.toISOString(), row.id]);
       }
     });
   }
@@ -340,18 +341,18 @@ export class PgEmailStore {
   async summary(now = new Date()): Promise<ReminderSummary> {
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      await client.query('BEGIN');
       const settings = await currentSettings(client);
       const today = todayMY(now);
       const result = await client.query<SummaryTaskRow>(`WITH scheduled_tasks AS (
-        SELECT COALESCE(d.id,j.id) id,j.local_date::text local_date,
-          COALESCE(d.status,j.status) status,COALESCE(d.record_count,0)::integer record_count,
+        SELECT COALESCE(d.id,j.id) id,CAST(j.local_date AS TEXT) local_date,
+          COALESCE(d.status,j.status) status,COALESCE(d.record_count,0) record_count,
           COALESCE(d.created_at,j.created_at) created_at,
-          COALESCE(GREATEST(d.updated_at,j.updated_at),d.updated_at,j.updated_at) updated_at,d.error
+          COALESCE(max(d.updated_at,j.updated_at),d.updated_at,j.updated_at) updated_at,d.error
         FROM email_job j
         LEFT JOIN email_delivery d ON d.id=j.delivery_id AND d.kind='scheduled' AND d.local_date=j.local_date
         UNION ALL
-        SELECT d.id,d.local_date::text,d.status,d.record_count,d.created_at,d.updated_at,d.error
+        SELECT d.id,CAST(d.local_date AS TEXT) local_date,d.status,d.record_count,d.created_at,d.updated_at,d.error
         FROM email_delivery d
         WHERE d.kind='scheduled' AND NOT EXISTS (
           SELECT 1 FROM email_job j WHERE j.delivery_id=d.id AND j.local_date=d.local_date
@@ -361,9 +362,9 @@ export class PgEmailStore {
       ), latest_task AS (
         SELECT * FROM scheduled_tasks ORDER BY created_at DESC,id DESC LIMIT 1
       )
-      SELECT 'today'::text slot,* FROM today_task
+      SELECT 'today' slot,* FROM today_task
       UNION ALL
-      SELECT 'latest'::text slot,* FROM latest_task`, [today]);
+      SELECT 'latest' slot,* FROM latest_task`, [today]);
       await client.query('COMMIT');
       const mapTask = (row: SummaryTaskRow | undefined): ReminderTaskSummary | null => row ? ({
         id: row.id, localDate: row.local_date, status: row.status, recordCount: row.record_count,
@@ -403,8 +404,7 @@ export class PgEmailStore {
 
   async claimTest(recipientEmail: string, requestId: string, senderEmail: string, now = new Date()): Promise<DeliveryClaim> {
     return withTransaction(this.pool, async (client) => {
-      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`email-request:${requestId}`]);
-      const prior = await client.query<{ delivery_id: string; action: string }>('SELECT delivery_id,action FROM email_request WHERE request_id=$1 FOR UPDATE', [requestId]);
+      const prior = await client.query<{ delivery_id: string; action: string }>('SELECT delivery_id,action FROM email_request WHERE request_id=$1', [requestId]);
       if (prior.rows[0]) {
         if (prior.rows[0].action !== 'test') throw conflict('requestId was already used for another email action.', 'email_request_reused');
         const delivery = await deliveryById(client, prior.rows[0].delivery_id);
@@ -454,8 +454,7 @@ export class PgEmailStore {
 
   async claimRetry(id: string, requestId: string, now = new Date()): Promise<DeliveryClaim> {
     return withTransaction(this.pool, async (client) => {
-      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`email-request:${requestId}`]);
-      const prior = await client.query<{ delivery_id: string }>('SELECT delivery_id FROM email_request WHERE request_id=$1 FOR UPDATE', [requestId]);
+      const prior = await client.query<{ delivery_id: string }>('SELECT delivery_id FROM email_request WHERE request_id=$1', [requestId]);
       if (prior.rows[0]) {
         if (prior.rows[0].delivery_id !== id) throw conflict('requestId was already used for another email.', 'email_request_reused');
         const delivery = await deliveryById(client, prior.rows[0].delivery_id);
@@ -488,7 +487,7 @@ export class PgEmailStore {
       } else {
         replacement = { ...delivery, status: 'sending', updatedAt: timestamp, messageId: null, error: null, attempts: delivery.attempts + 1 };
       }
-      await client.query(`UPDATE email_delivery SET status=$2,recipient_email=$3,cc_email=$4,cc_emails=$5::text[],sender_email=$6,
+      await client.query(`UPDATE email_delivery SET status=$2,recipient_email=$3,cc_email=$4,cc_emails=$5,sender_email=$6,
         subject=$7,html_content=$8,record_count=$9,updated_at=$10,message_id=$11,error=$12,attempts=$13 WHERE id=$1`, [
         id, replacement.status, replacement.recipientEmail, replacement.ccEmail,
         replacement.ccEmails ?? (replacement.ccEmail ? [replacement.ccEmail] : []), replacement.senderEmail,

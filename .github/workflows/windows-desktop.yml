@@ -1,0 +1,39 @@
+name: Build Windows desktop installer
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      ELECTRON_BUILDER_COMPRESSION_LEVEL: '3'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: npm test
+      - run: npm run test:integration
+      - name: Install build-time LibreOffice distribution
+        run: choco install libreoffice-fresh --yes --no-progress
+      - run: npm run desktop:prepare
+      - run: npm run desktop:dist
+      - name: Hash the installer
+        shell: pwsh
+        run: |
+          Get-ChildItem -LiteralPath release -Filter '*Setup*.exe' | ForEach-Object {
+            $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+            "$($hash.Hash.ToLower())  $($_.Name)" | Set-Content -LiteralPath "$($_.FullName).sha256"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nda-tracker-windows-x64
+          path: |
+            release/*Setup*.exe
+            release/*.sha256
+          if-no-files-found: error

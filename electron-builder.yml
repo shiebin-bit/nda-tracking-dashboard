@@ -1,0 +1,42 @@
+appId: my.nda-tracker.desktop
+productName: NDA Tracker
+asar: false
+compression: normal
+directories:
+  output: release
+files:
+  - desktop/**
+  - dist/public/**
+  - dist/server/**
+  - '!dist/server/**/*.test.*'
+  - templates/**
+  - public/**
+  - package.json
+  - '!**/.env*'
+  - '!**/work/**'
+  - '!**/backups/**'
+  - '!**/*.sqlite'
+  - '!**/*.sqlite-*'
+  - '!**/*.dump'
+  - '!**/desktop-settings.json'
+extraResources:
+  - from: work/desktop-vendor/libreoffice
+    to: libreoffice
+  - from: work/desktop-vendor/manifest.json
+    to: bundled-components.json
+win:
+  icon: desktop/nda-tracker.ico
+  target:
+    - target: nsis
+      arch: [x64]
+  signExecutable: false
+  artifactName: NDA-Tracker-Setup-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true
+publish: null

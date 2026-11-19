@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Pool, PoolClient } from 'pg';
+import type { Pool, PoolClient } from './db.js';
 import type { Project, ProjectStatus, Supplier, SupplierAssignmentInput, SupplierAssignmentItem, SupplierAssignmentResult, SupplierDetails } from '../src/supplier-types.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { withTransaction } from './db.js';
@@ -90,14 +90,25 @@ function assignmentInput(value: unknown): SupplierAssignmentInput {
 }
 
 function uniqueError(error: unknown, label: string): never {
-  if (typeof error === 'object' && error && (error as {code?:string}).code === '23505') {
+  if (typeof error === 'object' && error && ['23505','ERR_SQLITE_ERROR'].includes(String((error as {code?:string}).code))
+      && /unique/i.test(String((error as Error).message))) {
     throw conflict(`${label} is already in use.`, 'duplicate_code');
   }
   throw error;
 }
 
+// SQLite NOCASE covers ASCII only. Preserve the register's Unicode ID rule
+// under the same writer transaction as the insert/update.
+async function assertUniqueCode(client:PoolClient,table:'supplier'|'project',code:string|null,excludeId?:string):Promise<void>{
+  if(code===null)return;
+  const column=table==='supplier'?'supplier_code':'project_code';
+  const rows=await client.query<{id:string;code:string|null}>(`SELECT id,${column} code FROM ${table}`);
+  const folded=code.normalize('NFC').toLowerCase();
+  if(rows.rows.some(row=>row.id!==excludeId&&row.code?.normalize('NFC').toLowerCase()===folded))throw conflict(`${table==='supplier'?'Supplier ID':'Project code'} is already in use.`,'duplicate_code');
+}
+
 async function requireSupplier(client: PoolClient, id: string, lock = false): Promise<Record<string, any>> {
-  const result=await client.query(`SELECT * FROM supplier WHERE id=$1 AND deleted_at IS NULL${lock?' FOR UPDATE':''}`,[id]);
+  const result=await client.query(`SELECT * FROM supplier WHERE id=$1 AND deleted_at IS NULL`,[id]);
   if(!result.rows[0]) throw notFound('Supplier was not found.');
   return result.rows[0];
 }
@@ -107,7 +118,7 @@ async function supplierDetails(client: PoolClient, id:string): Promise<SupplierD
   const agreements=await client.query(`SELECT id,reference_code,version,fields->>'Recipient' recipient,fields->>'Status' status
     FROM nda_record WHERE supplier_id=$1 AND deleted_at IS NULL ORDER BY position`,[id]);
   const documents=await client.query(`SELECT id,reference_code,version,COALESCE(document_type,'nda') document_type,
-      values->'recipient'->>'name' recipient,linked_nda_id,project_id,status,updated_at
+      "values"->'recipient'->>'name' recipient,linked_nda_id,project_id,status,updated_at
     FROM contract WHERE supplier_id=$1 AND deleted_at IS NULL ORDER BY updated_at DESC,id`,[id]);
   return {...base,
     agreements:agreements.rows.map(row=>({id:row.id,reference:row.reference_code,version:row.version,recipient:row.recipient??'',status:row.status??''})),
@@ -126,7 +137,7 @@ export class PgSupplierStore {
   async supplier(id:string): Promise<SupplierDetails> {
     const client=await this.pool.connect();
     try {
-      await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      await client.query('BEGIN');
       const result=await supplierDetails(client,id);
       await client.query('COMMIT');
       return result;
@@ -149,12 +160,9 @@ export class PgSupplierStore {
       // Keep the same lock order as contract confirmation (workspace -> contract -> NDA).
       // This prevents an assignment and a simultaneous signature confirmation from
       // deadlocking while still serializing the register revision/history positions.
-      let revision=(await client.query<{revision:string}>(agreementIds.length
-        ? 'SELECT revision::text FROM workspace WHERE id=1 FOR UPDATE'
-        : 'SELECT revision::text FROM workspace WHERE id=1')).rows[0].revision;
-      const lockedDocuments=documentIds.length||agreementIds.length ? (await client.query(`SELECT * FROM contract
-        WHERE id::text=ANY($1::text[]) OR (linked_nda_id::text=ANY($2::text[]) AND deleted_at IS NULL)
-        ORDER BY id FOR UPDATE`,[documentIds,agreementIds])).rows : [];
+      let revision=(await client.query<{revision:string}>('SELECT CAST(revision AS TEXT) revision FROM workspace WHERE id=1')).rows[0].revision;
+      const lockedDocuments=documentIds.length||agreementIds.length ? (await client.query(`SELECT * FROM contract ORDER BY id`)).rows
+        .filter(row=>documentVersions.has(row.id)||(row.linked_nda_id&&agreementVersions.has(row.linked_nda_id)&&!row.deleted_at)) : [];
       const documents=lockedDocuments.filter(row=>documentVersions.has(row.id));
       if(documents.length!==documentIds.length)throw notFound('One or more selected documents were not found.');
       for(const row of documents){
@@ -168,7 +176,7 @@ export class PgSupplierStore {
       const relatedAgreementIds=[...new Set([...agreementIds,...documents.flatMap(row=>row.linked_nda_id?[row.linked_nda_id]:[])])].sort();
       const lockedAgreements=relatedAgreementIds.length ? (await client.query(`SELECT n.*,
           (SELECT supplier_code FROM supplier current_supplier WHERE current_supplier.id=n.supplier_id) supplier_code
-        FROM nda_record n WHERE n.id::text=ANY($1::text[]) ORDER BY n.id FOR UPDATE`,[relatedAgreementIds])).rows : [];
+        FROM nda_record n ORDER BY n.id`)).rows.filter(row=>relatedAgreementIds.includes(row.id)) : [];
       const agreements=lockedAgreements.filter(row=>agreementVersions.has(row.id));
       if(agreements.length!==agreementIds.length)throw notFound('One or more selected agreements were not found.');
       for(const row of agreements){
@@ -197,12 +205,12 @@ export class PgSupplierStore {
       const target=await requireSupplier(client,id,true);
 
       const now=new Date().toISOString();let agreementsChanged=0;let documentsChanged=0;
-      let historyPosition=agreementIds.length ? Number((await client.query('SELECT COALESCE(max(position),0)::text position FROM history_event')).rows[0].position)+1 : 0;
+      let historyPosition=agreementIds.length ? Number((await client.query('SELECT CAST(COALESCE(max(position),0) AS TEXT) position FROM history_event')).rows[0].position)+1 : 0;
       for(const row of agreements){
         if(row.supplier_id===id)continue;
         await client.query('UPDATE nda_record SET supplier_id=$2,version=version+1,updated_at=$3 WHERE id=$1',[row.id,id,now]);
         await client.query(`INSERT INTO history_event(id,position,nda_id,type,timestamp,actor,summary,changes)
-          VALUES($1,$2,$3,'supplier-linked',$4,'Local user','Assigned NDA record to supplier.',$5::jsonb)`,
+          VALUES($1,$2,$3,'supplier-linked',$4,'Local user','Assigned NDA record to supplier.',$5)`,
         [randomUUID(),historyPosition++,row.id,now,JSON.stringify([
           {field:'Supplier ID',before:row.supplier_code??null,after:target.supplier_code},
           {field:'Version',before:row.version,after:row.version+1},
@@ -212,20 +220,20 @@ export class PgSupplierStore {
         if(row.supplier_id===id)continue;
         await client.query('UPDATE contract SET supplier_id=$2,version=version+1,updated_at=$3 WHERE id=$1',[row.id,id,now]);
         await client.query(`INSERT INTO contract_activity(id,contract_id,type,actor,details,created_at)
-          VALUES($1,$2,'supplier-assigned','Local user',$3::jsonb,$4)`,
+          VALUES($1,$2,'supplier-assigned','Local user',$3,$4)`,
         [randomUUID(),row.id,JSON.stringify({beforeSupplierId:row.supplier_id??null,supplierId:id,supplierCode:target.supplier_code}),now]);documentsChanged++;
       }
-      if(agreementsChanged)revision=(await client.query<{revision:string}>('UPDATE workspace SET revision=revision+1 WHERE id=1 RETURNING revision::text')).rows[0].revision;
+      if(agreementsChanged)revision=(await client.query<{revision:string}>('UPDATE workspace SET revision=revision+1 WHERE id=1 RETURNING CAST(revision AS TEXT) revision')).rows[0].revision;
       return {supplier:await supplierDetails(client,id),revision,agreementsChanged,documentsChanged};
     });
   }
 
   async createSupplier(input:unknown): Promise<Supplier> {
     const value=supplierInput(input); const now=new Date().toISOString(); const id=randomUUID();
-    try { const result=await this.pool.query(`INSERT INTO supplier(id,supplier_code,company_name,registration_number,address,
+    try { return await withTransaction(this.pool,async client=>{await assertUniqueCode(client,'supplier',value.supplierCode);const result=await client.query(`INSERT INTO supplier(id,supplier_code,company_name,registration_number,address,
       contact_name,contact_designation,contact_address,contact_email,created_at,updated_at)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) RETURNING *`,[id,value.supplierCode,value.companyName,value.registrationNumber,
-      value.address,value.contact.name,value.contact.designation,value.contact.address,value.contact.email,now]); return mapSupplier(result.rows[0]); }
+      value.address,value.contact.name,value.contact.designation,value.contact.address,value.contact.email,now]); return mapSupplier(result.rows[0]);}); }
     catch(error){ uniqueError(error,'Supplier ID'); }
   }
 
@@ -234,6 +242,7 @@ export class PgSupplierStore {
     const expected=assertExpectedVersion(input.expectedVersion); const value=supplierInput(input); const now=new Date().toISOString();
     try { return await withTransaction(this.pool,async client=>{const current=await requireSupplier(client,id,true);
       if(current.version!==expected)throw conflict('This supplier was changed by another session. Reload and try again.','version_conflict');
+      await assertUniqueCode(client,'supplier',value.supplierCode,id);
       const result=await client.query(`UPDATE supplier SET supplier_code=$2,company_name=$3,registration_number=$4,address=$5,
         contact_name=$6,contact_designation=$7,contact_address=$8,contact_email=$9,version=version+1,updated_at=$10 WHERE id=$1 RETURNING *`,
       [id,value.supplierCode,value.companyName,value.registrationNumber,value.address,value.contact.name,value.contact.designation,value.contact.address,value.contact.email,now]);
@@ -247,17 +256,18 @@ export class PgSupplierStore {
 
   async createProject(input:unknown): Promise<Project> {
     const value=projectInput(input);const id=randomUUID();const now=new Date().toISOString();
-    try {const result=await this.pool.query(`INSERT INTO project(id,project_code,name,description,status,created_at,updated_at)
-      VALUES($1,$2,$3,$4,$5,$6,$6) RETURNING *`,[id,value.projectCode,value.name,value.description,value.status,now]);return mapProject(result.rows[0]);}
+    try {return await withTransaction(this.pool,async client=>{await assertUniqueCode(client,'project',value.projectCode);const result=await client.query(`INSERT INTO project(id,project_code,name,description,status,created_at,updated_at)
+      VALUES($1,$2,$3,$4,$5,$6,$6) RETURNING *`,[id,value.projectCode,value.name,value.description,value.status,now]);return mapProject(result.rows[0]);});}
     catch(error){uniqueError(error,'Project code');}
   }
 
   async updateProject(id:string,input:unknown): Promise<Project> {
     if(!isPlainObject(input))throw badRequest('Request body must be an object.');
     const expected=assertExpectedVersion(input.expectedVersion);const value=projectInput(input);const now=new Date().toISOString();
-    try{return await withTransaction(this.pool,async client=>{const current=await client.query('SELECT * FROM project WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[id]);
+    try{return await withTransaction(this.pool,async client=>{const current=await client.query('SELECT * FROM project WHERE id=$1 AND deleted_at IS NULL',[id]);
       if(!current.rows[0])throw notFound('Project was not found.');
       if(current.rows[0].version!==expected)throw conflict('This project was changed by another session. Reload and try again.','version_conflict');
+      await assertUniqueCode(client,'project',value.projectCode,id);
       const result=await client.query(`UPDATE project SET project_code=$2,name=$3,description=$4,status=$5,version=version+1,updated_at=$6
         WHERE id=$1 RETURNING *`,[id,value.projectCode,value.name,value.description,value.status,now]);return mapProject(result.rows[0]);});}
     catch(error){uniqueError(error,'Project code');}

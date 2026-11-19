@@ -1,53 +1,14 @@
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { Pool } from 'pg';
+import type { Pool } from './db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createEmptyFields, derive, type Fields } from '../src/core';
-import { migrate } from './db';
 import { PgEmailStore } from './email';
 import { PgNdaStore } from './store';
+import { sqliteTestPool } from './sqlite-test-helper';
 
-const url = process.env.TEST_DATABASE_URL;
-const suite = url ? describe : describe.skip;
-
-suite('incremental PostgreSQL migration adoption', () => {
-  const schema = `test_email_migration_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  let admin: Pool;
+describe('SQLite email delivery state machine', () => {
   let pool: Pool;
-
-  beforeAll(async () => {
-    admin = new Pool({ connectionString: url });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    pool = new Pool({ connectionString: url, options: `-c search_path=${schema}` });
-    const initial = await readFile(resolve(process.cwd(), 'migrations/001_initial.sql'), 'utf8');
-    await pool.query(initial);
-    await pool.query("UPDATE workspace SET revision=2,settings=settings-'automaticRemindersEnabled' WHERE id=1");
-  });
-
-  afterAll(async () => {
-    await pool?.end();
-    await admin?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-    await admin?.end();
-  });
-
-  it('adopts 001, applies 002, and preserves workspace state without a revision bump', async () => {
-    await Promise.all([migrate(pool), migrate(pool)]);
-    const state = await pool.query(`SELECT revision::text,settings FROM workspace WHERE id=1`);
-    expect(state.rows[0]).toMatchObject({ revision: '2', settings: { automaticRemindersEnabled: false } });
-    const applied = await pool.query('SELECT name FROM schema_migration ORDER BY name');
-    expect(applied.rows.map((row) => row.name)).toEqual([
-      '001_initial.sql', '002_email_delivery.sql', '003_contracts.sql', '004_recycle_bin.sql', '005_signed_files.sql',
-      '008_supplier_email.sql', '009_documents_v2.sql', '010_display_references.sql',
-    ]);
-    await expect(pool.query('SELECT count(*)::integer count FROM email_delivery')).resolves.toMatchObject({ rows: [{ count: 0 }] });
-  });
-});
-
-suite('PostgreSQL email delivery state machine', () => {
-  const schema = `test_email_delivery_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  let admin: Pool;
-  let pool: Pool;
+  let cleanup: () => Promise<void>;
   let nda: PgNdaStore;
   let email: PgEmailStore;
   const now = new Date('2026-10-19T01:00:00.000Z');
@@ -57,10 +18,7 @@ suite('PostgreSQL email delivery state machine', () => {
   });
 
   beforeAll(async () => {
-    admin = new Pool({ connectionString: url });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    pool = new Pool({ connectionString: url, options: `-c search_path=${schema}` });
-    await migrate(pool);
+    ({pool,cleanup}=await sqliteTestPool('nda-email-state'));
     nda = new PgNdaStore(pool, async () => undefined);
     email = new PgEmailStore(pool);
     const created = await nda.create({ fields: valid() });
@@ -77,9 +35,7 @@ suite('PostgreSQL email delivery state machine', () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
-    await admin?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-    await admin?.end();
+    await cleanup?.();
   });
 
   it('allows only one cross-process daily claim and regenerates a failed retry from current settings', async () => {
@@ -139,10 +95,9 @@ suite('PostgreSQL email delivery state machine', () => {
   });
 });
 
-suite('PostgreSQL scheduler timing and expired-day contract', () => {
-  const schema = `test_email_schedule_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  let admin: Pool;
+describe('SQLite scheduler timing and expired-day contract', () => {
   let pool: Pool;
+  let cleanup: () => Promise<void>;
   let email: PgEmailStore;
 
   const row = (recipient: string, overrides: Partial<Fields> = {}): Fields => ({
@@ -151,10 +106,7 @@ suite('PostgreSQL scheduler timing and expired-day contract', () => {
   });
 
   beforeAll(async () => {
-    admin = new Pool({ connectionString: url });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    pool = new Pool({ connectionString: url, options: `-c search_path=${schema}` });
-    await migrate(pool);
+    ({pool,cleanup}=await sqliteTestPool('nda-email-schedule'));
     const nda = new PgNdaStore(pool, async () => undefined);
     const imported = await nda.importRows({ rows: [
       row('Expired pending'),
@@ -173,14 +125,12 @@ suite('PostgreSQL scheduler timing and expired-day contract', () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
-    await admin?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-    await admin?.end();
+    await cleanup?.();
   });
 
   it('claims only the current day after the saved time and includes expired Pending records on consecutive days', async () => {
     await expect(email.claimScheduled(new Date('2026-10-19T00:59:00.000Z'))).resolves.toBeNull();
-    await expect(pool.query('SELECT count(*)::integer count FROM email_job')).resolves.toMatchObject({ rows: [{ count: 0 }] });
+    await expect(pool.query('SELECT count(*) count FROM email_job')).resolves.toMatchObject({ rows: [{ count: 0 }] });
 
     const catchup = await email.claimScheduled(new Date('2026-10-19T01:05:00.000Z'));
     expect(catchup).toMatchObject({
@@ -200,35 +150,31 @@ suite('PostgreSQL scheduler timing and expired-day contract', () => {
     expect(nextDay!.delivery.htmlContent).toContain('Expired pending');
     await email.finalize(nextDay!.delivery.id, { status: 'submitted', messageId: '<day-two>' }, new Date('2026-10-20T01:00:01.000Z'));
 
-    const jobs = await pool.query<{ local_date: string }>('SELECT local_date::text FROM email_job ORDER BY local_date');
+    const jobs = await pool.query<{ local_date: string }>('SELECT CAST(local_date AS TEXT) local_date FROM email_job ORDER BY local_date');
     expect(jobs.rows.map((job) => job.local_date)).toEqual(['2026-10-19', '2026-10-20']);
   });
 });
 
-suite('PostgreSQL read-only reminder summary', () => {
-  const schema = `test_email_summary_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  let admin: Pool;
+describe('SQLite read-only reminder summary', () => {
   let pool: Pool;
+  let cleanup: () => Promise<void>;
   let email: PgEmailStore;
 
   beforeAll(async () => {
-    admin = new Pool({ connectionString: url });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    pool = new Pool({ connectionString: url, options: `-c search_path=${schema}` });
-    await migrate(pool);
-    await pool.query(`UPDATE workspace SET settings=jsonb_build_object(
-      'recipientEmail','digest@example.com','ccEmail','copy@example.com','senderEmail','sender@example.com',
-      'ccEmails',jsonb_build_array('copy@example.com','audit@example.com'),
-      'sendTime','09:00','timeZone','Asia/Kuala_Lumpur','reminderDays',jsonb_build_array(30),
-      'automaticRemindersEnabled',true
-    ) WHERE id=1`);
-    await pool.query(`INSERT INTO email_delivery(
-      id,kind,local_date,status,recipient_email,cc_email,sender_email,subject,html_content,
-      record_count,created_at,updated_at,message_id,error,attempts
-    ) SELECT 'test-'||n,'test','2026-10-19','submitted','test@example.com','','sender@example.com',
-      'test','<p>test</p>',0,'2026-10-19T03:00:00Z'::timestamptz+n*interval '1 minute',
-      '2026-10-19T03:00:00Z'::timestamptz+n*interval '1 minute',NULL,NULL,1
-      FROM generate_series(1,105) n`);
+    ({pool,cleanup}=await sqliteTestPool('nda-email-summary'));
+    await pool.query(`UPDATE workspace SET settings=$1 WHERE id=1`,[JSON.stringify({
+      recipientEmail:'digest@example.com',ccEmail:'copy@example.com',senderEmail:'sender@example.com',
+      ccEmails:['copy@example.com','audit@example.com'],sendTime:'09:00',timeZone:'Asia/Kuala_Lumpur',
+      reminderDays:[30],automaticRemindersEnabled:true,
+    })]);
+    for(let n=1;n<=105;n+=1){
+      const timestamp=new Date(Date.parse('2026-10-19T03:00:00Z')+n*60_000).toISOString();
+      await pool.query(`INSERT INTO email_delivery(
+        id,kind,local_date,status,recipient_email,cc_email,sender_email,subject,html_content,
+        record_count,created_at,updated_at,message_id,error,attempts
+      ) VALUES($1,'test','2026-10-19','submitted','test@example.com','','sender@example.com',
+        'test','<p>test</p>',0,$2,$2,NULL,NULL,1)`,[`test-${n}`,timestamp]);
+    }
     await pool.query(`INSERT INTO email_delivery(
       id,kind,local_date,status,recipient_email,cc_email,sender_email,subject,html_content,
       record_count,created_at,updated_at,message_id,error,attempts
@@ -240,9 +186,7 @@ suite('PostgreSQL read-only reminder summary', () => {
   });
 
   afterAll(async () => {
-    await pool?.end();
-    await admin?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-    await admin?.end();
+    await cleanup?.();
   });
 
   it('excludes tests and finds the latest scheduled result beyond the 100-row delivery list cap', async () => {
@@ -273,8 +217,9 @@ suite('PostgreSQL read-only reminder summary', () => {
       VALUES('job-today','2026-10-19','skipped','scheduled-today','2026-10-19T01:00:00Z','2026-10-19T01:00:01Z')`);
     for (const status of ['skipped', 'failed', 'unknown'] as const) {
       const error = status === 'skipped' ? 'No reminders were due.' : `${status} detail`;
-      await pool.query(`UPDATE email_delivery SET status=$1,error=$2,record_count=$3,updated_at=updated_at+interval '1 second' WHERE id='scheduled-today'`, [status, error, status === 'skipped' ? 0 : 2]);
-      await pool.query(`UPDATE email_job SET status=$1,updated_at=updated_at+interval '1 second' WHERE id='job-today'`, [status]);
+      const updatedAt=new Date(Date.now()+1_000).toISOString();
+      await pool.query(`UPDATE email_delivery SET status=$1,error=$2,record_count=$3,updated_at=$4 WHERE id='scheduled-today'`, [status, error, status === 'skipped' ? 0 : 2,updatedAt]);
+      await pool.query(`UPDATE email_job SET status=$1,updated_at=$2 WHERE id='job-today'`, [status,updatedAt]);
       const summary = await email.summary(new Date('2026-10-19T02:00:00.000Z'));
       expect(summary.nextCheckState).toBe('scheduled');
       expect(summary.nextCheckAt).toBe('2026-10-20T01:00:00.000Z');

@@ -4,7 +4,7 @@ import type { BackupStatus } from '../src/backup-types.js';
 
 export const BACKUP_STATUS_FILE = 'status.json';
 export const BACKUP_STATUS_STALE_MS = 180_000;
-export const AUTOMATIC_BACKUP_PATTERN = /^nda-auto-\d{4}-\d{2}-\d{2}-\d{8}T\d{6}Z\.dump$/;
+export const AUTOMATIC_BACKUP_PATTERN = /^nda-auto-\d{4}-\d{2}-\d{2}-\d{8}T\d{6}Z\.(?:dump|sqlite)$/;
 const MAX_STATUS_BYTES = 65_536;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SHA_PATTERN = /^[0-9a-f]{64}$/;

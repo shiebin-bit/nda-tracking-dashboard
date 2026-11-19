@@ -11,8 +11,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/React-19-149ECA?style=for-the-badge&logo=react&logoColor=white" alt="React 19">
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript 5.9">
-  <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL 16">
-  <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker ready">
+  <img src="https://img.shields.io/badge/SQLite-Local-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="Local SQLite">
+  <img src="https://img.shields.io/badge/Windows-Desktop-0078D4?style=for-the-badge" alt="Windows desktop">
 </p>
 
 <p align="center">
@@ -24,6 +24,10 @@
 </p>
 
 ## Why This Project Exists
+
+**Desktop edition:** this source revision targets a standalone Windows x64 installer with a bundled runtime, per-user SQLite database and local PDF conversion. Users download the installer from GitHub Releases rather than cloning the repository or installing Docker. See the [Windows installation and recovery guide](docs/WINDOWS_DESKTOP.md).
+
+The previous PostgreSQL/Docker edition is preserved at commit [`f51e672`](https://github.com/shiebin-bit/nda-tracking-dashboard/commit/f51e672). Docker commands in older guides apply to that version. Do not rebuild an existing PostgreSQL deployment from this desktop source before migrating its data.
 
 Preparing an NDA and following it up often involves an Excel register, a Word template, a folder of signed PDFs, and a separate reminder flow. NDA Tracker brings those steps into one local workspace.
 
@@ -44,8 +48,8 @@ Users select an NDA or EOI template, prepare documents, generate files and keep 
 - Brevo connection checks, explicit test emails, reminder previews, delivery records, and failure handling
 - Agreement history, append-only follow-up notes, renewal links, and optimistic version checks
 - Recoverable deletion for agreements and contracts
-- PostgreSQL persistence, register-only JSON recovery, and automatic complete database backups
-- Docker Compose setup with local application/database ports and an internal PDF conversion service
+- Personal SQLite persistence, register-only JSON recovery, and automatic complete database snapshots
+- Windows desktop installer with bundled PDF conversion, system tray operation and optional Windows startup
 - Stable website references for agreements (`AGR-000001`) and documents (`DOC-000001`), including existing records
 - Supplier IDs and shared projects, with explicit assignment of existing agreements/documents and review of linked groups
 - Versioned template drafts: DOCX paragraph/cell editing and fixed-layout PDF field placement
@@ -124,11 +128,11 @@ Signatures are checked by the user. The application does not provide electronic 
 | Empty candidate list | Recorded as No reminders due; no email is sent |
 | Restart after the scheduled time | Processes today's unhandled task; does not replay past dates |
 
-The worker checks on startup and every minute. PostgreSQL stores the daily task and delivery history with a unique local-date constraint to guard against duplicate daily submission. Explicit failures can be retried through Settings; uncertain results caused by timeouts or interruption are marked **Needs review** and are not automatically resent.
+The worker checks on startup and every minute. SQLite stores the daily task and delivery history with a unique local-date constraint to guard against duplicate daily submission. Explicit failures can be retried through Settings; uncertain results caused by timeouts or interruption are marked **Needs review** and are not automatically resent.
 
 **Submitted** means Brevo accepted the request. Actual delivery must be checked in the mailbox or Brevo logs. Test emails have a `[TEST]` subject, contain example content, omit CC, and do not consume the daily reminder task.
 
-The browser can be closed while reminders run. **The computer and Docker must remain running.** A GitHub repository alone does not host the application or keep its scheduler online.
+The window can be closed while reminders continue in the system tray. **The computer and NDA Tracker must remain running.** Quit from the tray to stop the background service. Sending email requires internet access; local editing and PDF generation do not.
 
 ### Date calculation
 
@@ -154,9 +158,9 @@ This supports positive fractional years. It is a fixed-day rule, not a calendar-
 
 ### Backend
 
-- Node.js 22 container runtime and TypeScript
+- Electron 45 with bundled Node.js 24 runtime and TypeScript
 - Native Node HTTP server
-- PostgreSQL 16 with `pg`
+- SQLite through `node:sqlite`; PostgreSQL is a one-time migration source only
 - Docxtemplater and PizZip for DOCX generation
 - Busboy for signed-PDF multipart uploads
 - Yazl for streaming batch ZIP downloads
@@ -164,38 +168,37 @@ This supports positive fractional years. It is a fixed-day rule, not a calendar-
 
 ### Infrastructure and verification
 
-- Docker and Docker Compose
-- Gotenberg 8 / LibreOffice for internal DOCX-to-PDF conversion
-- Read-only Times New Roman font mounts from the Windows host
-- Separate PostgreSQL backup worker
-- Vitest unit and PostgreSQL integration tests
-- GitHub Actions checks for tests, builds, and container buildability
+- Per-user NSIS Windows installer with explicit resource allowlists
+- Bundled LibreOffice and app-local Microsoft runtime for DOCX-to-PDF conversion
+- Windows-provided Times New Roman fonts; Microsoft fonts are not redistributed
+- Verified SQLite online snapshots and complete workspace restore
+- Vitest unit and SQLite integration tests
+- GitHub Actions checks and a manually triggered Windows installer build
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-    Browser[Browser: React workspace] -->|127.0.0.1:5183| App[Node HTTP API and background workers]
-    App --> DB[(PostgreSQL 16)]
-    DataGrip[Optional DataGrip connection] -->|127.0.0.1:5433| DB
-    App -->|DOCX| Converter[Gotenberg / LibreOffice: internal network]
+    Browser[Electron: React workspace] -->|Protected loopback session| App[Bundled Node API and background workers]
+    App --> DB[(Personal SQLite database)]
+    App -->|DOCX| Converter[Bundled local LibreOffice]
     Converter -->|PDF| App
     App -->|HTTPS| Brevo[Brevo transactional email API]
     Brevo --> Inbox[Configured recipient and optional CC]
-    Backup[Independent backup worker] -->|pg_dump| DB
+    Backup[Online snapshot worker] --> DB
     Backup --> Files[Local automatic backup files]
     Files -->|Read-only status access| App
 ```
 
-The application owns the record APIs, document job worker and email scheduler. PostgreSQL holds agreements, history, templates, contract snapshots, generated DOCX/PDF binaries, uploaded signed PDFs, and mail records. The converter has no published host port and is isolated on the internal documents network.
+The application owns the record APIs, document job worker and email scheduler. SQLite holds agreements, history, templates, contract snapshots, generated DOCX/PDF binaries, uploaded signed PDFs and mail records. Conversion uses an isolated local LibreOffice profile. The converter does not inherit the email credential or desktop session token.
 
-Local access is the current deployment boundary. There is no account system or role-based authorization; activity attribution is **Local user**. Host/origin checks and local port binding do not replace authentication. Public or multi-user deployment needs a separate access-control design.
+Each Windows user/computer owns an independent workspace under `%LOCALAPPDATA%\NDA Tracker`. The desktop API binds only to loopback on a random port and requires the desktop session cookie. There is no shared account system; activity attribution remains **Local user**. This is a personal desktop application, not a public or multi-user server.
 
 Repository layout:
 
 ```text
 nda-tracking-dashboard/
-├── .github/workflows/     # CI tests and container build checks
+├── .github/workflows/     # CI tests and Windows installer build
 ├── docs/                 # Guides, architecture, API and demo screenshots
 ├── migrations/           # Ordered, incremental PostgreSQL migrations
 ├── scripts/              # Windows startup, backups and template preparation
@@ -212,7 +215,7 @@ nda-tracking-dashboard/
 
 ## Current State
 
-The local Docker workflow is implemented: contract preparation, document generation, final-PDF storage, manual signing confirmation, NDA tracking, reminders, history and recovery.
+The desktop port preserves contract preparation, document generation, final-PDF storage, manual signing confirmation, NDA tracking, reminders, history and recovery. Installer verification results are recorded separately from the earlier Docker rollout.
 
 Fresh installations create an **empty register** and seed the FFM NDA and EOI templates. The repository does not recreate the original Excel records or import demonstration data on startup. Test fixtures are not runtime seeds.
 
@@ -222,11 +225,33 @@ Current limits:
 - Manual signature confirmation; no electronic signature service
 - One configured recipient and up to ten optional CC addresses per digest
 - Local trusted access with no accounts or individual user attribution
-- Windows font mounts in the supplied Compose file; other operating systems need equivalent licensed font paths
+- The desktop installer targets Windows x64; other platforms are not packaged
 - Local backups need separate off-device protection
 - No cloud deployment or public URL is supplied by this repository
 
 ## Quick Start
+
+1. Download the verified Windows x64 installer from [GitHub Releases](https://github.com/shiebin-bit/nda-tracking-dashboard/releases) when a preview release is available.
+2. Install and open **NDA Tracker**. No separate Docker, Node.js or database installation is needed.
+3. Add suppliers/projects and documents, or import Excel. A fresh installation starts empty.
+4. In **Settings → Desktop workspace**, configure your own Brevo connection and optional Windows startup.
+5. Save reminder recipients/rules and enable automatic reminders when ready.
+
+The complete installer includes the PDF converter. Preview builds are unsigned; company application-control rules may require IT approval. See [Windows installation, upgrade and recovery](docs/WINDOWS_DESKTOP.md) for full instructions.
+
+## Personal Data and Recovery
+
+- The SQLite database is stored separately from application files in `%LOCALAPPDATA%\NDA Tracker`.
+- **Save complete backup** includes all documents, signed files, suppliers, templates, History and the mail ledger in one verified `.sqlite` file.
+- **Restore complete backup** saves a safety copy and pauses automatic reminders. The Windows-protected email key remains on the current computer.
+- Automatic backups run on first start and daily at **02:00 MYT**, retaining 14 successful copies with restart catch-up.
+- The original register JSON backup contains the active register, History and reminder preferences only.
+- Installing an update preserves personal data. Keep an off-device complete backup too.
+
+<details>
+<summary>Legacy Docker reference — applies only to the pre-desktop version at f51e672</summary>
+
+### Legacy setup
 
 ### 1. Requirements
 
@@ -308,6 +333,8 @@ This stops the project's containers while retaining the database volume. Do not 
 
 Complete PostgreSQL backups include contracts and binary files. Neither complete database backups nor register JSON contains `.env` or the Brevo API key. Keep runtime configuration separately. For a full recovery, use an isolated empty database and verify the result before reconnecting the application. Detailed procedures are in the [Operations Guide](docs/OPERATIONS.md).
 
+</details>
+
 ## Testing
 
 Unit tests and production compilation:
@@ -318,27 +345,27 @@ npm test
 npm run build
 ```
 
-PostgreSQL integration tests require an explicitly configured **disposable test database**:
+SQLite integration tests use disposable temporary databases:
 
 ```powershell
-$env:TEST_DATABASE_URL = 'postgresql://nda_test:local_test_password@127.0.0.1:55433/nda_tracker_test'
 npm run test:integration
-Remove-Item Env:TEST_DATABASE_URL
 ```
 
-See the [Developer Guide](docs/DEVELOPMENT.md) for creating and removing that database container. Without `TEST_DATABASE_URL`, integration suites are skipped. Do not point tests at your working register database.
+Do not point tests or an import command at an active desktop data file. The PostgreSQL importer reads a separate source snapshot and writes a new destination; it is not part of ordinary desktop startup.
 
 Coverage includes date/milestone boundaries, Excel safety and duplicate handling, version conflicts, atomic renewal, follow-up notes, email scheduling and uncertain outcomes, document job recovery, signed-file validation and confirmation, and recycle-bin restoration.
 
-Feature checks on **18 November 2026** passed: **128 unit tests**, **52 PostgreSQL integration tests**, and client/server production compilation. The latest isolated checks covered reference backfilling and preservation, atomic Supplier classification, reassignment, and template-first document creation on desktop and mobile. Previous checks covered EOI signing without tracking, NDA tracking, duplicate confirmation, Supplier ID exclusion, PDF-only signing, rotated PDF fields, and rendered EOI pages.
+Desktop checks on **19 November 2026** passed: **135 unit tests**, **49 SQLite integration tests**, and client/server production compilation. The PostgreSQL engine's three incremental-migration tests were replaced by SQLite lifecycle checks; the remaining application integration suites run against disposable SQLite files with no skipped suites. An isolated PostgreSQL import also preserved generated files, signed PDFs, full CC lists and reference sequence gaps, while pausing reminders only in the destination. No real email was sent.
+
+The packaged desktop app was exercised through NDA/EOI generation, signed-file upload, idempotent confirmation, complete backup/restore and close-to-tray operation. See the [desktop verification record](docs/DESKTOP_VERIFICATION.md) for installer checks and remaining validation limits.
 
 ### Dependency status
 
-On **17 November 2026**, `npm audit --omit=dev` reported **zero advisories** for the installed production dependency graph. Recheck the audit when upgrading dependencies; a passing build is not a security clearance for a public deployment.
+On **19 November 2026**, `npm audit --omit=dev` reported **zero advisories** for the installed production dependency graph. The build-tool dependency graph has six moderate advisories. Recheck the audit when upgrading dependencies; a passing build is not a security clearance for a public deployment.
 
 ## CI
 
-[ci.yml](.github/workflows/ci.yml) runs unit tests, PostgreSQL integration tests, the client/server build, and both Docker image builds for pushes and pull requests targeting `main`. It uses a disposable PostgreSQL service and no Brevo credentials. PDF conversion in store integration tests uses a local test service; CI does not claim a full visual LibreOffice or physical printing check.
+[ci.yml](.github/workflows/ci.yml) runs unit tests, SQLite integration tests and the client/server build for pushes and pull requests targeting `main`. It needs no database service or Brevo credentials. PDF conversion in store integration tests uses a local test service. [windows-desktop.yml](.github/workflows/windows-desktop.yml) is a manual Windows build that prepares the bundled converter, creates the installer and uploads it as a workflow artifact.
 
 The workflow verifies the repository; it does not deploy the dashboard or publish an image.
 

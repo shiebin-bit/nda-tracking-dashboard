@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Pool } from 'pg';
+import type { Pool } from './db.js';
 import type {
   ContractTemplate,
   ContractValues,
@@ -47,7 +47,7 @@ function versionNumber(value: unknown): number { if (!Number.isSafeInteger(value
 function publishedVersion(value: unknown): string { const text = typeof value === 'string' ? value.trim() : ''; if (!/^[0-9][a-zA-Z0-9._-]{0,31}$/.test(text)) throw badRequest('Published version is invalid.'); return text; }
 
 function mapFamily(row: Record<string, any>): TemplateFamily {
-  return { id: row.id, key: row.family_key, name: row.name, documentType: row.document_type, format: row.template_format, active: row.active, publishedTemplateId: row.published_template_id ?? null, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) };
+  return { id: row.id, key: row.family_key, name: row.name, documentType: row.document_type, format: row.template_format, active: Boolean(row.active), publishedTemplateId: row.published_template_id ?? null, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) };
 }
 
 function mapDraft(row: Record<string, any>): TemplateDraft {
@@ -55,7 +55,7 @@ function mapDraft(row: Record<string, any>): TemplateDraft {
 }
 
 function mapTemplate(row: Record<string, any>): ContractTemplate {
-  return { id: row.id, key: row.template_key, version: row.template_version, name: row.name, fileName: row.file_name, checksum: row.checksum, active: row.active, familyId: row.family_id ?? null, documentType: row.document_type ?? 'nda', format: row.template_format ?? 'docx', fieldSchema: row.field_schema ?? [], editorSnapshot: row.editor_snapshot ?? null, createdAt: iso(row.created_at) };
+  return { id: row.id, key: row.template_key, version: row.template_version, name: row.name, fileName: row.file_name, checksum: row.checksum, active: Boolean(row.active), familyId: row.family_id ?? null, documentType: row.document_type ?? 'nda', format: row.template_format ?? 'docx', fieldSchema: row.field_schema ?? [], editorSnapshot: row.editor_snapshot ?? null, createdAt: iso(row.created_at) };
 }
 
 function normalizeSnapshot(value: unknown, current: TemplateEditorSnapshot): TemplateEditorSnapshot {
@@ -94,7 +94,7 @@ export class PgTemplateStore {
   }
 
   async listDrafts(): Promise<TemplateDraft[]> {
-    const result = await this.pool.query(`SELECT d.*,f.document_type,f.template_format,octet_length(d.source_content)::integer source_size_bytes
+    const result = await this.pool.query(`SELECT d.*,f.document_type,f.template_format,length(d.source_content) source_size_bytes
       FROM template_draft d JOIN template_family f ON f.id=d.family_id ORDER BY d.updated_at DESC,d.id`);
     return result.rows.map(mapDraft);
   }
@@ -112,12 +112,12 @@ export class PgTemplateStore {
     const payloadHash = sourceChecksum(Buffer.concat([raw.content, Buffer.from(JSON.stringify({key,name,type,format,fileName}))]));
     try { return await withTransaction(this.pool, async (client) => {
       if (rid) {
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [rid]);
+        // BEGIN IMMEDIATE serializes request-id claims for this local database.
         const previous = await client.query(`SELECT action,payload_hash,response_body FROM contract_request WHERE request_id=$1`, [rid]);
         if (previous.rows[0]) {
           if (previous.rows[0].action !== 'template.import' || previous.rows[0].payload_hash !== payloadHash) throw conflict('requestId was already used for another request.', 'request_id_conflict');
           const ids = previous.rows[0].response_body as { familyId: string; draftId: string };
-          const result = await client.query(`SELECT d.*,f.document_type,f.template_format,octet_length(d.source_content)::integer source_size_bytes,
+          const result = await client.query(`SELECT d.*,f.document_type,f.template_format,length(d.source_content) source_size_bytes,
             f.family_key,f.name family_name,f.active,f.published_template_id,f.created_at family_created_at,f.updated_at family_updated_at
             FROM template_draft d JOIN template_family f ON f.id=d.family_id WHERE d.id=$1 AND f.id=$2`, [ids.draftId, ids.familyId]);
           if (!result.rows[0]) throw conflict('The earlier template import is unavailable.', 'request_id_conflict');
@@ -128,15 +128,15 @@ export class PgTemplateStore {
       if ((await client.query('SELECT 1 FROM template_family WHERE lower(family_key)=lower($1)', [key])).rows[0]) throw conflict('A template family with this key already exists.', 'template_key_conflict');
       const familyId = randomUUID(); const draftId = randomUUID();
       const familyResult = await client.query(`INSERT INTO template_family(id,family_key,name,document_type,template_format,active,created_at,updated_at)
-        VALUES($1,$2,$3,$4,$5,true,now(),now()) RETURNING *`, [familyId,key,name,type,format]);
+        VALUES($1,$2,$3,$4,$5,1,now(),now()) RETURNING *`, [familyId,key,name,type,format]);
       const draftResult = await client.query(`INSERT INTO template_draft(id,family_id,version,name,file_name,source_content,source_checksum,editor_snapshot,created_at,updated_at)
-        VALUES($1,$2,1,$3,$4,$5,$6,$7::jsonb,now(),now()) RETURNING *,octet_length(source_content)::integer source_size_bytes`,
+        VALUES($1,$2,1,$3,$4,$5,$6,$7,now(),now()) RETURNING *,length(source_content) source_size_bytes`,
       [draftId,familyId,name,fileName,raw.content,digest,JSON.stringify(snapshot)]);
       if (rid) await client.query(`INSERT INTO contract_request(request_id,action,payload_hash,response_status,response_body,created_at)
-        VALUES($1,'template.import',$2,201,$3::jsonb,now())`, [rid,payloadHash,JSON.stringify({familyId,draftId})]);
+        VALUES($1,'template.import',$2,201,$3,now())`, [rid,payloadHash,JSON.stringify({familyId,draftId})]);
       return { family: mapFamily(familyResult.rows[0]), draft: mapDraft({...draftResult.rows[0],document_type:type,template_format:format}) };
     }); } catch(error:any) {
-      if(error?.code==='23505') throw conflict('A template family with this key already exists.','template_key_conflict');
+      if(error?.code==='23505' || String(error?.code).startsWith('SQLITE_CONSTRAINT')) throw conflict('A template family with this key already exists.','template_key_conflict');
       throw error;
     }
   }
@@ -144,13 +144,13 @@ export class PgTemplateStore {
   async updateDraft(id: string, raw: unknown): Promise<{ draft: TemplateDraft }> {
     const input = object(raw); const expected = versionNumber(input.expectedVersion);
     return withTransaction(this.pool, async (client) => {
-      const result = await client.query(`SELECT d.*,f.document_type,f.template_format,octet_length(d.source_content)::integer source_size_bytes
-        FROM template_draft d JOIN template_family f ON f.id=d.family_id WHERE d.id=$1 FOR UPDATE OF d`, [id]);
+      const result = await client.query(`SELECT d.*,f.document_type,f.template_format,length(d.source_content) source_size_bytes
+        FROM template_draft d JOIN template_family f ON f.id=d.family_id WHERE d.id=$1`, [id]);
       const row = result.rows[0]; if (!row) throw notFound('Template draft was not found.');
       if (row.version !== expected) throw conflict('This template draft changed in another session.', 'version_conflict');
       const snapshot = normalizeSnapshot(input.editorSnapshot, row.editor_snapshot);
-      const updated = await client.query(`UPDATE template_draft SET version=version+1,name=$2,editor_snapshot=$3::jsonb,preview_version=NULL,preview_checksum=NULL,updated_at=now() WHERE id=$1
-        RETURNING *,octet_length(source_content)::integer source_size_bytes`, [id,title(input.name ?? row.name),JSON.stringify(snapshot)]);
+      const updated = await client.query(`UPDATE template_draft SET version=version+1,name=$2,editor_snapshot=$3,preview_version=NULL,preview_checksum=NULL,updated_at=now() WHERE id=$1
+        RETURNING *,length(source_content) source_size_bytes`, [id,title(input.name ?? row.name),JSON.stringify(snapshot)]);
       return { draft: mapDraft({...updated.rows[0],document_type:row.document_type,template_format:row.template_format}) };
     });
   }
@@ -192,7 +192,7 @@ export class PgTemplateStore {
     const input = object(raw); const rid = requestId(input.requestId); const expected = versionNumber(input.expectedVersion); const version = publishedVersion(input.version);
     const requestHash=sourceChecksum(Buffer.from(JSON.stringify({id,expected,version,name:input.name??null})));
     return withTransaction(this.pool, async (client) => {
-      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [rid]);
+      // BEGIN IMMEDIATE serializes request-id claims for this local database.
       const earlier = await client.query(`SELECT action,payload_hash,response_body FROM contract_request WHERE request_id=$1`, [rid]);
       if (earlier.rows[0]) {
         if(earlier.rows[0].action!==`template.publish:${id}` || earlier.rows[0].payload_hash!==requestHash) throw conflict('requestId was already used for another request.','request_id_conflict');
@@ -201,7 +201,7 @@ export class PgTemplateStore {
         if (!template.rows[0]) throw conflict('The earlier published template is unavailable.','request_id_conflict');
         return {template:mapTemplate(template.rows[0])};
       }
-      const result = await client.query(`SELECT d.*,f.family_key,f.document_type,f.template_format FROM template_draft d JOIN template_family f ON f.id=d.family_id WHERE d.id=$1 FOR UPDATE OF d,f`,[id]);
+      const result = await client.query(`SELECT d.*,f.family_key,f.document_type,f.template_format FROM template_draft d JOIN template_family f ON f.id=d.family_id WHERE d.id=$1`,[id]);
       const row=result.rows[0]; if(!row) throw notFound('Template draft was not found.');
       if(row.version!==expected) throw conflict('This template draft changed in another session.','version_conflict');
       if(row.preview_version!==row.version || !row.preview_checksum) throw conflict('Preview this template draft before publishing it.','template_preview_required');
@@ -214,12 +214,12 @@ export class PgTemplateStore {
       }
       const digest=sourceChecksum(publishedContent); const templateId=randomUUID(); const name=title(input.name??row.name);
       if((await client.query('SELECT 1 FROM contract_template WHERE template_key=$1 AND template_version=$2',[row.family_key,version])).rows[0]) throw conflict('This template version already exists.','template_version_conflict');
-      await client.query('UPDATE contract_template SET active=false WHERE family_id=$1',[row.family_id]);
+      await client.query('UPDATE contract_template SET active=0 WHERE family_id=$1',[row.family_id]);
       const inserted=await client.query(`INSERT INTO contract_template(id,template_key,template_version,name,file_name,mime_type,content,checksum,tags,active,family_id,document_type,template_format,field_schema,editor_snapshot)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,true,$10,$11,$12,$13::jsonb,$14::jsonb) RETURNING *`,
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,1,$10,$11,$12,$13,$14) RETURNING *`,
       [templateId,row.family_key,version,name,row.file_name,TEMPLATE_CONTENT_TYPES[row.template_format as TemplateFormat],publishedContent,digest,JSON.stringify((row.editor_snapshot.fields??[]).map((f:{key:string})=>f.key)),row.family_id,row.document_type,row.template_format,JSON.stringify(row.editor_snapshot.fields??[]),JSON.stringify(row.editor_snapshot)]);
       await client.query('UPDATE template_family SET name=$2,published_template_id=$3,updated_at=now() WHERE id=$1',[row.family_id,name,templateId]);
-      await client.query(`INSERT INTO contract_request(request_id,action,payload_hash,response_status,response_body,created_at) VALUES($1,$2,$3,201,$4::jsonb,now())`,[rid,`template.publish:${id}`,requestHash,JSON.stringify({templateId})]);
+      await client.query(`INSERT INTO contract_request(request_id,action,payload_hash,response_status,response_body,created_at) VALUES($1,$2,$3,201,$4,now())`,[rid,`template.publish:${id}`,requestHash,JSON.stringify({templateId})]);
       return {template:mapTemplate(inserted.rows[0])};
     });
   }

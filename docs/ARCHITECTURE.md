@@ -1,5 +1,7 @@
 # Architecture and Data Boundaries
 
+> The current Windows desktop edition uses a sandboxed Electron renderer, a session-protected loopback API, per-user SQLite storage, bundled local LibreOffice and a Windows-protected email credential. See [Windows desktop architecture and operations](WINDOWS_DESKTOP.md). The Docker/PostgreSQL process and recovery descriptions below are historical context for migration from `f51e672`.
+
 ## Deployment boundary
 
 The supplied stack is a single local workspace. React calls a same-origin Node HTTP API. Application/database ports bind to `127.0.0.1`; document conversion uses an internal Docker network. There is no authentication service, tenant separation or per-user authorization. `Local user` is an attribution label, not a verified identity.

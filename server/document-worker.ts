@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { Pool, PoolClient } from 'pg';
+import type { Pool, PoolClient } from './db.js';
 import Docxtemplater from 'docxtemplater';
 import PizZip from 'pizzip';
 import { templateData } from '../src/contract-core.js';
@@ -7,6 +7,7 @@ import type { ContractValues } from '../src/contract-types.js';
 import { withTransaction } from './db.js';
 import { AppError } from './errors.js';
 import { renderPdfTemplate, resolveTemplateFields } from './template-render.js';
+import { convertLocally, LocalConversionError } from './local-converter.js';
 
 const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const PDF_TYPE = 'application/pdf';
@@ -49,6 +50,10 @@ export function renderContractDocx(template: Buffer, values: ContractValues, cus
 }
 
 export async function convertContractToPdf(baseUrl: string, docx: Buffer, fileName: string): Promise<Buffer> {
+  if(baseUrl==='local'){
+    try{return await convertLocally(docx);}
+    catch(error){throw new ConversionError(error instanceof Error?error.message:'Local PDF conversion failed.',error instanceof LocalConversionError?error.transient:true);}
+  }
   const form = new FormData();
   form.append('files', new Blob([new Uint8Array(docx)], { type: DOCX_TYPE }), fileName);
   form.append('skipEmptyPages', 'true');
@@ -81,18 +86,18 @@ export async function convertContractToPdf(baseUrl: string, docx: Buffer, fileNa
 }
 
 async function nextOrdinal(client: PoolClient, contractId: string): Promise<number> {
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`contract-version:${contractId}`]);
+  // BEGIN IMMEDIATE serializes ordinal allocation for the local database.
   const result = await client.query(
-    'SELECT COALESCE(max(ordinal),0)::integer + 1 ordinal FROM contract_version WHERE contract_id=$1',
+    'SELECT COALESCE(max(ordinal),0) + 1 ordinal FROM contract_version WHERE contract_id=$1',
     [contractId],
   );
   return result.rows[0].ordinal;
 }
 
 async function assertJobCapacity(client: PoolClient, jobId: string, additionalBytes: number): Promise<void> {
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`document-job-capacity:${jobId}`]);
+  // The caller's write transaction serializes job-capacity checks.
   const result = await client.query(
-    `SELECT COALESCE(sum(octet_length(a.content)),0)::text total
+    `SELECT CAST(COALESCE(sum(length(a.content)),0) AS TEXT) total
      FROM document_artifact a
      WHERE a.id IN (
        SELECT docx_artifact_id FROM document_job_item WHERE job_id=$1 AND docx_artifact_id IS NOT NULL
@@ -122,6 +127,7 @@ async function aggregateJobStatus(client: PoolClient, jobId: string): Promise<vo
 export class DocumentWorker {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private stopping = false;
   private readonly owner = randomUUID();
 
   constructor(
@@ -132,6 +138,7 @@ export class DocumentWorker {
   ) {}
 
   async start(): Promise<void> {
+    this.stopping = false;
     await this.recoverExpired();
     this.timer = setInterval(() => void this.tick(), this.pollMs);
     this.timer.unref();
@@ -139,17 +146,18 @@ export class DocumentWorker {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     while (this.running) await new Promise((resolve) => setTimeout(resolve, 25));
   }
 
-  wake(): void { void this.tick(); }
+  wake(): void { if (!this.stopping) void this.tick(); }
 
   private async recoverExpired(): Promise<void> {
     await withTransaction(this.pool, async (client) => {
       const expired = await client.query(
-        `SELECT id FROM document_job WHERE status='running' AND (lease_until IS NULL OR lease_until < now()) FOR UPDATE`,
+        `SELECT id FROM document_job WHERE status='running' AND (lease_until IS NULL OR lease_until < now())`,
       );
       for (const row of expired.rows) {
         await client.query(
@@ -167,7 +175,7 @@ export class DocumentWorker {
   }
 
   private async tick(): Promise<void> {
-    if (this.running) return;
+    if (this.running || this.stopping) return;
     this.running = true;
     try {
       const jobId = await this.claimJob();
@@ -190,13 +198,13 @@ export class DocumentWorker {
          WHERE (status='queued' AND EXISTS (
            SELECT 1 FROM document_job_item i WHERE i.job_id=document_job.id AND i.status='queued' AND i.next_attempt_at<=now()
          )) OR (status='running' AND lease_until < now())
-         ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1`,
+         ORDER BY created_at,id LIMIT 1`,
       );
       if (!result.rows[0]) return null;
       const jobId = result.rows[0].id;
       await client.query(
-        `UPDATE document_job SET status='running',lease_owner=$2,lease_until=now()+($3 * interval '1 millisecond'),updated_at=now()
-         WHERE id=$1`, [jobId, this.owner, LEASE_MS],
+        `UPDATE document_job SET status='running',lease_owner=$2,lease_until=$3,updated_at=now()
+         WHERE id=$1`, [jobId, this.owner, new Date(Date.now() + LEASE_MS).toISOString()],
       );
       await client.query(
         `UPDATE document_job_item SET status=CASE WHEN attempts>=3 THEN
@@ -208,12 +216,12 @@ export class DocumentWorker {
   }
 
   private async processJob(jobId: string): Promise<void> {
-    while (true) {
+    while (!this.stopping) {
       const item = await withTransaction(this.pool, async (client) => {
         const result = await client.query(
           `SELECT * FROM document_job_item WHERE job_id=$1 AND status='queued'
            AND next_attempt_at<=now()
-           ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1`, [jobId],
+           ORDER BY created_at,id LIMIT 1`, [jobId],
         );
         if (!result.rows[0]) return null;
         const row = result.rows[0];
@@ -222,15 +230,15 @@ export class DocumentWorker {
            WHERE id=$1`, [row.id],
         );
         await client.query(
-          `UPDATE document_job SET lease_until=now()+($3 * interval '1 millisecond'),updated_at=now()
-           WHERE id=$1 AND lease_owner=$2`, [jobId, this.owner, LEASE_MS],
+          `UPDATE document_job SET lease_until=$3,updated_at=now()
+           WHERE id=$1 AND lease_owner=$2`, [jobId, this.owner, new Date(Date.now() + LEASE_MS).toISOString()],
         );
         return { ...row, attempts: row.attempts + 1 };
       });
       if (!item) break;
       await this.processItem(item);
     }
-    await this.finishJob(jobId);
+    if (!this.stopping) await this.finishJob(jobId);
   }
 
   private async processItem(item: Record<string, any>): Promise<void> {
@@ -274,9 +282,9 @@ export class DocumentWorker {
       if (failure.transient && item.attempts < 3) {
         const delayMs = Math.min(60_000, this.backoffBaseMs * (2 ** (item.attempts - 1)));
         await this.pool.query(
-          `UPDATE document_job_item SET status='queued',next_attempt_at=now()+($3 * interval '1 millisecond'),
+          `UPDATE document_job_item SET status='queued',next_attempt_at=$3,
             error_code='converter_temporary',error_message=$2,updated_at=now() WHERE id=$1`,
-          [item.id, failure.message, delayMs],
+          [item.id, failure.message, new Date(Date.now() + delayMs).toISOString()],
         );
       } else if (docxArtifactId) {
         await this.partialItem(item, docxArtifactId, failure);
@@ -303,7 +311,7 @@ export class DocumentWorker {
         `INSERT INTO contract_version(id,contract_id,ordinal,template_id,template_key,template_version,template_checksum,
           template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,template_format,custom_values_snapshot,
           supplier_id_snapshot,project_id_snapshot,template_family_id_snapshot,created_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13::jsonb,$14,$15,$16,now())`,
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now())`,
         [versionId, item.contract_id, ordinal, item.template_id, item.template_key, item.template_version,
           item.template_checksum, item.template_bytes, JSON.stringify(item.values_snapshot), docxArtifactId, pdfArtifactId,
           item.template_format ?? 'docx',JSON.stringify(item.custom_values_snapshot??{}),item.supplier_id_snapshot??null,
@@ -315,7 +323,7 @@ export class DocumentWorker {
       );
       await client.query(
         `INSERT INTO contract_activity(id,contract_id,type,actor,details,created_at)
-         VALUES($1,$2,'generation-complete','System',$3::jsonb,now())`,
+         VALUES($1,$2,'generation-complete','System',$3,now())`,
         [randomUUID(), item.contract_id, JSON.stringify({ jobId: item.job_id, versionId })],
       );
     });
@@ -329,7 +337,7 @@ export class DocumentWorker {
         `INSERT INTO contract_version(id,contract_id,ordinal,template_id,template_key,template_version,template_checksum,
           template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,template_format,custom_values_snapshot,
           supplier_id_snapshot,project_id_snapshot,template_family_id_snapshot,created_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,NULL,$11,$12::jsonb,$13,$14,$15,now())`,
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,$12,$13,$14,$15,now())`,
         [versionId, item.contract_id, ordinal, item.template_id, item.template_key, item.template_version,
           item.template_checksum, item.template_bytes, JSON.stringify(item.values_snapshot), docxArtifactId,
           item.template_format??'docx',JSON.stringify(item.custom_values_snapshot??{}),item.supplier_id_snapshot??null,
@@ -342,7 +350,7 @@ export class DocumentWorker {
       );
       await client.query(
         `INSERT INTO contract_activity(id,contract_id,type,actor,details,created_at)
-         VALUES($1,$2,'generation-partial','System',$3::jsonb,now())`,
+         VALUES($1,$2,'generation-partial','System',$3,now())`,
         [randomUUID(), item.contract_id, JSON.stringify({ jobId: item.job_id, versionId })],
       );
     });

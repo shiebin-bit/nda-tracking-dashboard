@@ -35,7 +35,7 @@ export function EmailConnectionPanel({senderEmail,unsaved,busy,onUseSender,onAct
       {(error||status?.error)&&<p role="alert" className="error-text">{error||status?.error}</p>}
       {status?.connected&&!status.transactionalEnabled&&<p className="error-text">Transactional email is not enabled in this Brevo account.</p>}
       {defaultSender&&<div className="email-sender-note"><span>Verified sender</span><strong>{defaultSender}</strong>{senderEmail!==defaultSender&&<button type="button" className="text-button" disabled={busy||sending} onClick={()=>onUseSender(defaultSender)}>Use this sender</button>}</div>}
-      <p className="caption">The API key stays on the server. A Gmail sender may appear with a Brevo sender address; replies go to the configured sender email.</p>
+      <p className="caption">Your API key stays in the local background service. A Gmail sender may appear with a Brevo sender address; replies go to the configured sender email.</p>
       <form className="email-test-form" onSubmit={event=>void send(event)}>
         <h3>Send a test email</h3><p className="caption">A sample message with a [TEST] subject. No NDA records or CC recipients are included.</p>
         <div className="field"><label htmlFor="test-recipient-email">Test recipient email</label><input id="test-recipient-email" type="email" autoComplete="email" value={recipient} onChange={event=>setRecipient(event.target.value)} placeholder="you@outlook.com" required disabled={sending||busy}/></div>
@@ -43,7 +43,7 @@ export function EmailConnectionPanel({senderEmail,unsaved,busy,onUseSender,onAct
         <button className="button secondary" type="submit" disabled={sending||busy||unsaved||checking||!status?.connected||!status.transactionalEnabled}><Send size={16}/>{sending?'Submitting…':'Send test email'}</button>
         {result&&<p className="email-result" role="status">{result}</p>}
       </form>
-      <p className="caption">Automatic checks run while this computer and Docker are on. You can close the browser.</p>
+      <p className="caption">Automatic checks run while this computer and NDA Tracker are running. You can close the window.</p>
       <a className="text-button" href="https://app.brevo.com/transactional/email/logs" target="_blank" rel="noreferrer">Open Brevo email logs<ExternalLink size={14}/></a>
     </div>
   </section>;

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+release/
 .env
 .env.*
 !.env.example
@@ -13,6 +14,12 @@ coverage/
 playwright-report/
 *.log
 *.dump
+*.sqlite
+*.sqlite-*
+*.db
+*.db-wal
+*.db-shm
+desktop-settings.json
 *.backup
 !Dockerfile.backup
 *.bak

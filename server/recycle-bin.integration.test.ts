@@ -1,24 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Pool } from 'pg';
+import type { Pool } from './db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createFfmContractDefaults } from '../src/contract-core';
 import { createEmptyFields, type Fields } from '../src/core';
 import { PgContractStore, seedContractTemplates } from './contract-store';
-import { migrate } from './db';
 import { DocumentWorker } from './document-worker';
 import { PgEmailStore } from './email';
 import { PgNdaStore } from './store';
+import { sqliteTestPool } from './sqlite-test-helper';
 
-const url = process.env.TEST_DATABASE_URL;
-const suite = url ? describe : describe.skip;
-
-suite('recycle bin PostgreSQL integration', () => {
-  const schema = `recycle_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  let admin: Pool;
+describe('recycle bin SQLite integration', () => {
   let pool: Pool;
+  let cleanup: () => Promise<void>;
   let ndas: PgNdaStore;
   let contracts: PgContractStore;
 
@@ -40,19 +35,14 @@ suite('recycle bin PostgreSQL integration', () => {
   };
 
   beforeAll(async () => {
-    admin = new Pool({ connectionString: url });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    pool = new Pool({ connectionString: url, options: `-c search_path=${schema}` });
-    await migrate(pool);
+    ({pool,cleanup}=await sqliteTestPool('nda-recycle'));
     await seedContractTemplates(pool);
     ndas = new PgNdaStore(pool, async () => undefined);
     contracts = new PgContractStore(pool);
   });
 
   afterAll(async () => {
-    await pool?.end();
-    await admin?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-    await admin?.end();
+    await cleanup?.();
   });
 
   it('recycles and restores an NDA with replay-safe history and active-only state', async () => {
@@ -97,9 +87,9 @@ suite('recycle bin PostgreSQL integration', () => {
     await expect(ndas.restoreRecycled(child.id, { requestId: randomUUID(), expectedVersion: child.version + 1 }))
       .rejects.toMatchObject({ status: 409, code: 'renewal_parent_recycled' });
 
-    const beforeImport = (await pool.query('SELECT count(*)::integer count FROM nda_record')).rows[0].count;
+    const beforeImport = (await pool.query('SELECT count(*) count FROM nda_record')).rows[0].count;
     await ndas.importRows({ rows: [child.fields] });
-    expect((await pool.query('SELECT count(*)::integer count FROM nda_record')).rows[0].count).toBe(beforeImport);
+    expect((await pool.query('SELECT count(*) count FROM nda_record')).rows[0].count).toBe(beforeImport);
     const state = await ndas.state();
     await expect(ndas.restore({ expectedRevision: state.revision, snapshot: state.snapshot }))
       .rejects.toMatchObject({ status: 409, code: 'recycle_bin_not_empty' });
@@ -190,12 +180,12 @@ suite('recycle bin PostgreSQL integration', () => {
       expect(job.status).toBe('complete');
       const artifact = await contracts.artifact(job.items[0].pdfArtifactId!);
       expect(artifact.content.subarray(0, 5).toString()).toBe('%PDF-');
-      const artifactCount = (await pool.query('SELECT count(*)::integer count FROM document_artifact WHERE contract_id=$1', [created.contract.id])).rows[0].count;
+      const artifactCount = (await pool.query('SELECT count(*) count FROM document_artifact WHERE contract_id=$1', [created.contract.id])).rows[0].count;
       const restored = await contracts.restoreRecycled(created.contract.id, {
         requestId: randomUUID(), expectedVersion: recycled.contract.version,
       });
       expect(restored.contract.version).toBe(3);
-      expect((await pool.query('SELECT count(*)::integer count FROM document_artifact WHERE contract_id=$1', [created.contract.id])).rows[0].count).toBe(artifactCount);
+      expect((await pool.query('SELECT count(*) count FROM document_artifact WHERE contract_id=$1', [created.contract.id])).rows[0].count).toBe(artifactCount);
     } finally {
       await worker.stop();
       await new Promise<void>((resolve) => converter.close(() => resolve()));
@@ -216,48 +206,5 @@ suite('recycle bin PostgreSQL integration', () => {
     });
     const claim = await new PgEmailStore(pool).claimScheduled(new Date('2026-10-23T01:00:00.000Z'));
     expect(claim).toMatchObject({ shouldSend: false, delivery: { status: 'skipped', recordCount: 0 } });
-  });
-});
-
-suite('recycle bin migration adoption', () => {
-  it('upgrades an existing 003 database without changing records, contracts, or file bytes', async () => {
-    const schema = `recycle_upgrade_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    const admin = new Pool({ connectionString: url });
-    let pool: Pool | undefined;
-    try {
-      await admin.query(`CREATE SCHEMA ${schema}`);
-      pool = new Pool({ connectionString: url, options: `-c search_path=${schema}` });
-      for (const migration of ['001_initial.sql', '002_email_delivery.sql', '003_contracts.sql']) {
-        await pool.query(await readFile(`migrations/${migration}`, 'utf8'));
-      }
-      await pool.query(`CREATE TABLE schema_migration(name text PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now())`);
-      await pool.query(`INSERT INTO schema_migration(name) VALUES
-        ('001_initial.sql'),('002_email_delivery.sql'),('003_contracts.sql')`);
-      const ndaId = randomUUID(); const contractId = randomUUID(); const artifactId = randomUUID();
-      await pool.query(`INSERT INTO nda_record(id,position,version,source,created_at,updated_at,fields,fingerprint)
-        VALUES($1,1,1,'manual',now(),now(),'{}'::jsonb,'fingerprint')`, [ndaId]);
-      await pool.query(`INSERT INTO contract(id,version,status,values,linked_nda_id,linked_nda_historical_id,created_at,updated_at)
-        VALUES($1,1,'draft','{}'::jsonb,$2,$2,now(),now())`, [contractId, ndaId]);
-      const bytes = Buffer.from('preserved contract artifact');
-      await pool.query(`INSERT INTO document_artifact(id,contract_id,kind,file_name,content_type,content,checksum,created_at)
-        VALUES($1,$2,'docx','preserved.docx','application/octet-stream',$3,'preserved-checksum',now())`,
-      [artifactId, contractId, bytes]);
-
-      await migrate(pool);
-
-      const migrated = await pool.query(`SELECT n.deleted_at nda_deleted,c.deleted_at contract_deleted,
-        c.linked_nda_id,a.content,a.checksum
-        FROM nda_record n JOIN contract c ON c.linked_nda_id=n.id
-        JOIN document_artifact a ON a.contract_id=c.id WHERE n.id=$1`, [ndaId]);
-      expect(migrated.rows[0]).toMatchObject({
-        nda_deleted: null, contract_deleted: null, linked_nda_id: ndaId, checksum: 'preserved-checksum',
-      });
-      expect(Buffer.compare(migrated.rows[0].content, bytes)).toBe(0);
-      expect((await pool.query("SELECT name FROM schema_migration WHERE name='004_recycle_bin.sql'")).rowCount).toBe(1);
-    } finally {
-      await pool?.end();
-      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-      await admin.end();
-    }
   });
 });

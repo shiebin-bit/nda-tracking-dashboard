@@ -19,40 +19,15 @@ jobs:
     name: Tests and production build
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: nda_tracker_test
-          POSTGRES_USER: nda_test
-          POSTGRES_PASSWORD: ci_only_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U nda_test -d nda_tracker_test"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
     env:
-      TEST_DATABASE_URL: postgresql://nda_test:ci_only_password@127.0.0.1:5432/nda_tracker_test
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm test
       - run: npm run test:integration
       - run: npm run build
-
-  containers:
-    name: Docker images
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build application image
-        run: docker build --tag nda-tracker-ci:app .
-      - name: Build backup worker image
-        run: docker build --file Dockerfile.backup --tag nda-tracker-ci:backup .

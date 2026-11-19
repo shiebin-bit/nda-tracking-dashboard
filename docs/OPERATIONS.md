@@ -1,5 +1,7 @@
 # Operations and Troubleshooting
 
+> Legacy guide: these Docker/PostgreSQL commands apply to the pre-desktop version at `f51e672`. For the current Windows SQLite application, use [Windows desktop operations](WINDOWS_DESKTOP.md). Do not rebuild an existing PostgreSQL deployment from the desktop source without first migrating and verifying its data.
+
 This guide covers the supplied local Docker deployment. All commands run from the repository root unless another directory is specified.
 
 ## Services and access

@@ -6,25 +6,26 @@
 
 将合同准备、Word/PDF 生成、签署件保存、NDA 到期 tracking 和邮件提醒放在一个本机网站中。原来的 Excel 仍然可以导入/导出，提醒不再依赖 Power Automate。
 
-目前使用固定的 FFM NDA 模板。合同草稿状态 Draft/Signed，与 tracking 的 Pending/Resolved 是两套不同状态。
+内置 FFM NDA、EOI 模板，也可以导入并发布自己的 Word／PDF 模板。合同草稿状态 Draft/Signed，与 tracking 的 Pending/Resolved 是两套不同状态。
 
 ## 开始使用
 
-1. 安装并打开 Docker Desktop，等待 Linux 容器引擎运行。
-2. 下载或 clone 仓库，在项目文件夹双击 `OPEN-NDA-DASHBOARD.cmd`。
-3. 第一次会生成本机 `.env` 数据库密码，构建容器后打开 `http://127.0.0.1:5183`。
-4. 新数据库没有工作记录，也不会自动导入原来的 11 条 Excel 资料。通过 Input、Import Excel 或 Contracts 建立自己的记录。
+1. 从 GitHub Releases 下载 Windows x64 的 `NDA-Tracker-Setup-<version>-x64.exe`，运行安装。
+2. 从桌面或开始菜单打开 **NDA Tracker**。安装包已包含运行环境和 PDF 转换器，不需要 Docker、Node.js 或另外安装数据库。
+3. 每个 Windows 用户有自己的 SQLite 资料库，位于 `%LOCALAPPDATA%\NDA Tracker`，与程序安装目录分开。
+4. 首次启动没有工作记录，通过 Input、Import Excel、Suppliers 或 Documents 建立自己的资料。更新程序会保留资料。
 
-`.env`、数据库、备份和真实合同不会随 GitHub clone 一起复制。不要用 `.env.example` 覆盖已经在使用的 `.env`。普通关闭使用 `STOP-NDA-DASHBOARD.cmd`，资料仍在数据库中。
+预览版安装包尚未数字签名，公司电脑可能需要 IT 批准。关闭窗口后程序留在系统托盘；右键托盘选择 **Quit NDA Tracker** 才会停止后台。Settings 可开启 **Start with Windows**。
 
-目前没有账号登录；能访问本机网站的人可以修改资料。现有设置只开放本机访问。
+目前没有应用内多人账号；使用当前 Windows 账户的人可以操作这份资料。程序只监听本机，并要求当前桌面会话凭证。它不提供不同电脑之间的数据同步。
 
 ## 主要页面
 
 | 页面 | 用法 |
 | --- | --- |
 | Overview | 看总数、待跟进和到期状态，搜索、筛选、导出 Excel，查看提醒状态 |
-| Contracts | 填写合同、生成文件、上传签署 PDF、确认并关联 tracking |
+| Documents | 选择模板、填写资料、生成文件、上传签署 PDF、确认签署 |
+| Suppliers / Templates | 管理 supplier、关联资料，以及导入、编辑和发布模板 |
 | Input | 直接登记、修改或续约 tracking 记录 |
 | History | 查看修改记录、导入、续约、处理备注、设置及恢复操作 |
 | Settings | 配置邮件收件人、CC、提醒天数、检查时间及备份 |
@@ -32,7 +33,7 @@
 
 ## 一份合同的完整流程
 
-1. **Contracts → New contract**：检查 FFM 默认资料，填写客户公司、注册号码、地址、Purpose、Duration，以及需要的联络人资料。
+1. **Documents → New document**：选择模板，检查默认资料，填写客户公司、注册号码、地址、Purpose、Duration，以及需要的联络人资料。
 2. **Save draft**：资料不完整也可以保存。Duration 默认三年，可以修改，包括正数小数年。
 3. **Generate Word & PDF**：双方公司名称、注册号码、地址、Purpose 和有效 Duration 必须齐全。未确定的日期、签署人、见证人可以先留白。
 4. **预览、下载、打印**：每次生成保留自己的资料快照和 Word/PDF。修改草稿后需要重新生成；不会覆盖旧版本。
@@ -76,7 +77,7 @@ Input 可以直接新增或编辑记录。Renew 建立关联的新记录，并�
 
 邮件由后端使用 Brevo API 发出，可以寄到 Outlook、学校邮箱或其他邮箱；不用 Microsoft Entra，也不用 Power Automate。
 
-1. 在本机 `.env` 加入 `BREVO_API_KEY`，保留数据库密码。
+1. 在 **Settings → Desktop workspace** 输入自己的 Brevo API key 和已验证寄件人。密钥由 Windows 当前账户加密保护，不进入数据库备份。
 2. 在项目目录执行 `docker compose up -d --build --wait app` 重新载入配置。
 3. Settings 检查 Brevo 连接，保存已验证的寄件人。
 4. 按需要明确发送测试邮件并检查收件箱。
@@ -93,7 +94,7 @@ Input 可以直接新增或编辑记录。Renew 建立关联的新记录，并�
 - Submitted 表示 Brevo 接受请求，不等于保证送达。
 - Failed 可查看原因并按规则重试；Needs review 表示结果不确定，不会自动重发。
 
-浏览器可以关闭，**电脑和 Docker 要持续运行**。重启后只处理当天尚未处理的任务，不追发过去日期。把代码放到 GitHub 不会让后台变成长期在线服务。
+窗口可以关闭，**电脑和托盘后台要持续运行**；发信时需要网络。电脑睡眠、关机或退出程序期间不会执行。重启后只处理当天尚未处理的任务，不追发过去日期。修改邮件连接或恢复备份后会暂停提醒，需要检查设置再启用。
 
 ## History、备注和删除
 
@@ -106,16 +107,17 @@ Delete 会移到回收站，可恢复。删除 agreement 会排除之后的提�
 ## 备份与恢复
 
 - Settings 的 **NDA register JSON** 只含有效 tracking、History、备注和提醒设置，不含合同文件或独立邮件记录。恢复会暂停自动提醒，保留合同文件。
-- **完整 PostgreSQL 备份** 包含合同草稿、生成版本、签署 PDF、回收站及邮件任务记录。
+- **完整 SQLite 备份** 包含 supplier、模板、合同草稿、生成版本、签署 PDF、回收站及邮件任务记录。
 - 自动完整备份首次建立，之后每天 02:00 MYT，保留 14 份成功自动备份。
-- 手动完整备份双击 `BACKUP-DATABASE.cmd`。
-- `.env` 和邮件密钥不在数据库备份里，要另外妥善保存。
+- 在 **Settings → Desktop workspace → Save complete backup** 保存单个 `.sqlite` 文件。
+- **Restore complete backup** 会核对格式、文件校验值和关联，先保存安全副本，再恢复并暂停提醒；本机邮件密钥不被替换。
+- 邮件密钥不在数据库备份里，换电脑后需重新配置。程序运行时不要只复制主数据库文件，因为最新资料可能仍在 WAL 工作文件里。
 
-有 agreement 在回收站时，需要先恢复它们，才能执行 JSON / Saved versions 整体恢复。备份存在同一台电脑，重要资料建议再复制到其他存储。完整数据库恢复步骤见 [Operations](OPERATIONS.md)。
+有 agreement 在回收站时，需要先恢复它们，才能执行 JSON / Saved versions 整体恢复；完整 SQLite 恢复包含回收站。重要备份建议另存到获准的其他磁盘。旧 PostgreSQL 用户先保留原安装，通过迁移工具生成 SQLite 文件后再使用完整恢复，详见 [Windows 指南](WINDOWS_DESKTOP.md)。
 
 ## DataGrip 连接
 
-Host `127.0.0.1`、Port `5433`、Database `nda_tracker`、User `nda_app`。密码使用本机 `.env` 的 `NDA_DB_PASSWORD`，Docker 要运行。只查看资料时，建议使用 DataGrip 的只读模式。
+选择 SQLite 驱动，打开一份 **Save complete backup** 导出的 `.sqlite` 文件，使用只读模式查看。桌面版没有数据库服务器端口、用户名或密码。不要用 DataGrip 修改正在使用的资料库。
 
 ## 当前版本没有包括
 

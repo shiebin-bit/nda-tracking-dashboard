@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
-import type { Pool, PoolClient } from 'pg';
+import type { Pool, PoolClient } from './db.js';
 import PizZip from 'pizzip';
 import {
   contractValuesFromTracking,
@@ -257,7 +257,7 @@ function mapTemplate(row: Record<string, any>): ContractTemplate {
     name: row.name,
     fileName: row.file_name,
     checksum: row.checksum,
-    active: row.active,
+    active: Boolean(row.active),
     familyId: row.family_id ?? null,
     documentType: row.document_type ?? 'nda',
     format: row.template_format ?? 'docx',
@@ -322,7 +322,7 @@ async function addActivity(
 ): Promise<void> {
   await client.query(
     `INSERT INTO contract_activity(id,contract_id,type,actor,details,created_at)
-     VALUES($1,$2,$3,'Local user',$4::jsonb,now())`,
+     VALUES($1,$2,$3,'Local user',$4,now())`,
     [randomUUID(), contractId, type, JSON.stringify(details)],
   );
 }
@@ -335,7 +335,7 @@ async function idempotent<T>(
   work: () => Promise<T>,
 ): Promise<T> {
   const payloadHash = hash(payload);
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [id]);
+  // BEGIN IMMEDIATE serializes idempotency claims in the local database.
   const existing = await client.query(
     'SELECT action,payload_hash,response_body FROM contract_request WHERE request_id=$1',
     [id],
@@ -350,7 +350,7 @@ async function idempotent<T>(
   const result = await work();
   await client.query(
     `INSERT INTO contract_request(request_id,action,payload_hash,response_status,response_body,created_at)
-     VALUES($1,$2,$3,200,$4::jsonb,now())`,
+     VALUES($1,$2,$3,200,$4,now())`,
     [id, action, payloadHash, JSON.stringify(result)],
   );
   return result;
@@ -358,9 +358,9 @@ async function idempotent<T>(
 
 async function lockedContract(client: PoolClient, id: string, allowRecycled = false): Promise<Record<string, any>> {
   const result = await client.query(`SELECT c.*,n.id linked_nda_active_id,n.deleted_at linked_nda_deleted_at,
-      (SELECT count(*)::integer FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count
+      (SELECT count(*) FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count
     FROM contract c LEFT JOIN nda_record n ON n.id=c.linked_nda_id AND n.deleted_at IS NULL
-    WHERE c.id=$1 FOR UPDATE OF c`, [id]);
+    WHERE c.id=$1`, [id]);
   if (!result.rows[0]) throw notFound('Contract was not found.');
   if (result.rows[0].deleted_at && !allowRecycled) {
     throw conflict('This contract is in the Recycle Bin.', 'contract_recycled');
@@ -396,17 +396,18 @@ async function insertContract(
     throw badRequest('EOI documents require a supplier and project.', 'document_association_required');
   }
   const result = await client.query(
-    `INSERT INTO contract(id,version,status,values,linked_nda_id,linked_nda_historical_id,document_type,
+    `INSERT INTO contract(id,version,status,"values",linked_nda_id,linked_nda_historical_id,document_type,
        supplier_id,project_id,template_family_id,custom_values,created_at,updated_at)
-     VALUES($1,1,'draft',$2::jsonb,$3,$3,$4,$5,$6,$7,$8::jsonb,now(),now()) RETURNING *`,
+     VALUES($1,1,'draft',$2,$3,$3,$4,$5,$6,$7,$8,now(),now()) RETURNING *`,
     [id, JSON.stringify(values), linkedNdaId, type, options.supplierId ?? null, options.projectId ?? null,
       options.templateFamilyId ?? null, JSON.stringify(options.customValues ?? {})],
   );
+  const stored = result.rows[0].reference_code ? result.rows[0] : (await client.query('SELECT * FROM contract WHERE id=$1',[id])).rows[0];
   await addActivity(client, id, 'created', {
     ...(linkedNdaId ? { linkedNdaId } : {}), documentType: type,
     supplierId: options.supplierId ?? null, projectId: options.projectId ?? null,
   });
-  return mapContract(result.rows[0]);
+  return mapContract(stored);
 }
 
 async function activeTemplate(
@@ -453,7 +454,7 @@ async function enqueue(
         id,job_id,contract_id,status,attempts,values_snapshot,template_id,template_key,template_version,
         template_checksum,template_file_name,template_bytes,template_format,field_schema,editor_snapshot,
         custom_values_snapshot,supplier_id_snapshot,project_id_snapshot,template_family_id_snapshot,created_at,updated_at)
-       VALUES($1,$2,$3,'queued',0,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17,now(),now())`,
+       VALUES($1,$2,$3,'queued',0,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now(),now())`,
       [randomUUID(), jobId, entry.row.id, JSON.stringify(entry.values), template.id, template.template_key,
         template.template_version, template.checksum, template.file_name, template.content,
         template.template_format ?? 'docx', JSON.stringify(template.field_schema ?? []),
@@ -522,9 +523,9 @@ export async function seedContractTemplates(pool: Pool, directory = 'templates')
          VALUES($1,$2,$3,$4,$5,true,now(),now()) ON CONFLICT (family_key) DO NOTHING`,
         [preferredFamilyId, familyKey, name,type,format],
       );
-      const family = await client.query('SELECT id,published_template_id FROM template_family WHERE family_key=$1 FOR UPDATE', [familyKey]);
+      const family = await client.query('SELECT id,published_template_id FROM template_family WHERE family_key=$1', [familyKey]);
       const existing = await client.query(
-        'SELECT id,checksum FROM contract_template WHERE template_key=$1 AND template_version=$2 FOR UPDATE',
+        'SELECT id,checksum FROM contract_template WHERE template_key=$1 AND template_version=$2',
         [key, version],
       );
       if (existing.rows[0] && existing.rows[0].checksum !== checksum) {
@@ -537,7 +538,7 @@ export async function seedContractTemplates(pool: Pool, directory = 'templates')
         await client.query(
           `INSERT INTO contract_template(id,template_key,template_version,name,file_name,content,checksum,tags,active,
              family_id,document_type,template_format,field_schema,editor_snapshot)
-           VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13::jsonb,$14::jsonb)`,
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
           [insertedId, key, version, name, fileName, content, checksum, JSON.stringify(tags), activateInitial, family.rows[0].id,
             type,format,JSON.stringify(managed?fieldSchema:tags.map((tag) => ({ key: tag, label: tag.replace(/_/g, ' '), type: 'text', required: false, source: tag }))),
             editorSnapshot?JSON.stringify(editorSnapshot):null],
@@ -554,7 +555,7 @@ export async function seedContractTemplates(pool: Pool, directory = 'templates')
         const snapshot = published.editor_snapshot ?? inspectDocxTemplate(published.content);
         if (published.field_schema?.length) snapshot.fields = published.field_schema;
         await client.query(`INSERT INTO template_draft(id,family_id,version,name,file_name,source_content,source_checksum,editor_snapshot)
-          VALUES($1,$2,1,$3,$4,$5,$6,$7::jsonb)`,
+          VALUES($1,$2,1,$3,$4,$5,$6,$7)`,
         [randomUUID(),family.rows[0].id,published.name,published.file_name,published.content,published.checksum,JSON.stringify(snapshot)]);
       }
     });
@@ -571,34 +572,32 @@ export class PgContractStore {
 
   async listContracts(): Promise<ContractListItem[]> {
     const result = await this.pool.query(`SELECT c.*,n.id linked_nda_active_id,n.deleted_at linked_nda_deleted_at,
-      (SELECT count(*)::integer FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count,
+      (SELECT count(*) FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count,
       (c.document_type='nda' AND c.supplier_id IS NOT NULL AND c.project_id IS NOT NULL AND NOT EXISTS(
         SELECT 1 FROM contract eoi WHERE eoi.document_type='eoi' AND eoi.status='signed'
-          AND eoi.deleted_at IS NULL AND eoi.supplier_id=c.supplier_id AND eoi.project_id=c.project_id)) signed_eoi_missing,
-      latest_generation.id latest_generation_id,latest_generation.ordinal latest_generation_ordinal,
-      latest_generation.job_id latest_generation_job_id,
-      latest_generation.complete latest_generation_complete,
-      latest_generation.matches_draft latest_generation_matches_draft
+          AND eoi.deleted_at IS NULL AND eoi.supplier_id=c.supplier_id AND eoi.project_id=c.project_id)) signed_eoi_missing
       FROM contract c LEFT JOIN nda_record n ON n.id=c.linked_nda_id AND n.deleted_at IS NULL
-      LEFT JOIN LATERAL (
-        SELECT cv.id,cv.ordinal,(cv.pdf_artifact_id IS NOT NULL) complete,
-          (cv.values_snapshot = c.values AND cv.custom_values_snapshot=(c.custom_values || COALESCE(
-            (SELECT jsonb_build_object('project_name',p.name,'project_description',p.description) FROM project p WHERE p.id=c.project_id AND p.deleted_at IS NULL),'{}'::jsonb))
-           AND cv.supplier_id_snapshot IS NOT DISTINCT FROM c.supplier_id
-           AND cv.project_id_snapshot IS NOT DISTINCT FROM c.project_id
-           AND cv.template_family_id_snapshot IS NOT DISTINCT FROM c.template_family_id) matches_draft,
-          (SELECT item.job_id FROM document_job_item item WHERE item.version_id=cv.id
-           ORDER BY item.created_at DESC,item.id DESC LIMIT 1) job_id
-        FROM contract_version cv WHERE cv.contract_id=c.id
-        ORDER BY cv.ordinal DESC LIMIT 1
-      ) latest_generation ON true
       WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC,c.id DESC`);
-    return result.rows.map(mapContractListItem);
+    const rows:Record<string,any>[]=[];
+    for(const row of result.rows){
+      const latest=(await this.pool.query(`SELECT cv.*,(SELECT item.job_id FROM document_job_item item WHERE item.version_id=cv.id ORDER BY item.created_at DESC,item.id DESC LIMIT 1) job_id FROM contract_version cv WHERE cv.contract_id=$1 ORDER BY cv.ordinal DESC LIMIT 1`,[row.id])).rows[0];
+      if(!latest){rows.push(row);continue;}
+      const custom=normalizeCustomValues(row.custom_values);
+      if(row.project_id){const project=(await this.pool.query('SELECT name,description FROM project WHERE id=$1 AND deleted_at IS NULL',[row.project_id])).rows[0];if(project){custom.project_name=String(project.name??'');custom.project_description=String(project.description??'');}}
+      rows.push({...row,latest_generation_id:latest.id,latest_generation_ordinal:latest.ordinal,
+        latest_generation_job_id:latest.job_id??null,latest_generation_complete:latest.pdf_artifact_id!==null,
+        latest_generation_matches_draft:stable(normalizeContractValues(latest.values_snapshot))===stable(normalizeContractValues(row.values))
+          &&stable(normalizeCustomValues(latest.custom_values_snapshot))===stable(custom)
+          &&(latest.supplier_id_snapshot??null)===(row.supplier_id??null)
+          &&(latest.project_id_snapshot??null)===(row.project_id??null)
+          &&(latest.template_family_id_snapshot??null)===(row.template_family_id??null)});
+    }
+    return rows.map(mapContractListItem);
   }
 
   async recycledContracts(): Promise<RecycledContract[]> {
     const result = await this.pool.query(`SELECT c.*,n.id linked_nda_active_id,n.deleted_at linked_nda_deleted_at,
-      (SELECT count(*)::integer FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count
+      (SELECT count(*) FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count
       FROM contract c LEFT JOIN nda_record n ON n.id=c.linked_nda_id AND n.deleted_at IS NULL
       WHERE c.deleted_at IS NOT NULL ORDER BY c.deleted_at DESC,c.id`);
     return result.rows.map((row) => ({
@@ -609,9 +608,9 @@ export class PgContractStore {
   async getContract(id: string): Promise<ContractDetails> {
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      await client.query('BEGIN');
       const contractResult = await client.query(`SELECT c.*,n.id linked_nda_active_id,n.deleted_at linked_nda_deleted_at,
-        (SELECT count(*)::integer FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count,
+        (SELECT count(*) FROM contract_signed_file sf WHERE sf.contract_id=c.id) signed_file_count,
         (c.document_type='nda' AND c.supplier_id IS NOT NULL AND c.project_id IS NOT NULL AND NOT EXISTS(
           SELECT 1 FROM contract eoi WHERE eoi.document_type='eoi' AND eoi.status='signed'
             AND eoi.deleted_at IS NULL AND eoi.supplier_id=c.supplier_id AND eoi.project_id=c.project_id)) signed_eoi_missing
@@ -703,7 +702,7 @@ export class PgContractStore {
       if (stable({values:normalizeContractValues(row.values),supplierId:row.supplier_id??null,projectId:row.project_id??null,templateFamilyId:row.template_family_id??null,customValues:normalizeCustomValues(row.custom_values)})
         === stable({values:validation.values,supplierId:options.supplierId,projectId:options.projectId,templateFamilyId:options.templateFamilyId,customValues})) return { contract: mapContract(row) };
       const result = await client.query(
-        `UPDATE contract SET version=version+1,values=$2::jsonb,supplier_id=$3,project_id=$4,template_family_id=$5,custom_values=$6::jsonb,updated_at=now() WHERE id=$1 RETURNING *`,
+        `UPDATE contract SET version=version+1,"values"=$2,supplier_id=$3,project_id=$4,template_family_id=$5,custom_values=$6,updated_at=now() WHERE id=$1 RETURNING *`,
         [id, JSON.stringify(validation.values),options.supplierId,options.projectId,options.templateFamilyId,JSON.stringify(customValues)],
       );
       await addActivity(client, id, 'updated');
@@ -727,15 +726,15 @@ export class PgContractStore {
     if (!isObject(input)) throw badRequest('Request body must be an object.');
     const rid = requestId(input.requestId); const version = expectedVersion(input.expectedVersion);
     return withTransaction(this.pool, (client) => idempotent(client, rid, `contract.refresh:${id}`, input, async () => {
-      await client.query('SELECT id FROM workspace WHERE id=1 FOR UPDATE');
+      await client.query('SELECT id FROM workspace WHERE id=1');
       const row = await lockedContract(client, id); checkVersion(row, version); ensureDraft(row);
       if (!row.linked_nda_id) throw conflict('The linked NDA is unavailable.', 'linked_nda_unavailable');
-      const nda = await client.query('SELECT fields,deleted_at FROM nda_record WHERE id=$1 FOR UPDATE', [row.linked_nda_id]);
+      const nda = await client.query('SELECT fields,deleted_at FROM nda_record WHERE id=$1', [row.linked_nda_id]);
       if (!nda.rows[0]) throw conflict('The linked NDA is unavailable.', 'linked_nda_unavailable');
       if (nda.rows[0].deleted_at) throw conflict('The linked NDA is in the Recycle Bin.', 'linked_nda_recycled');
       const values = contractValuesFromTracking(nda.rows[0].fields, normalizeContractValues(row.values));
       const result = await client.query(
-        `UPDATE contract SET version=version+1,values=$2::jsonb,updated_at=now() WHERE id=$1 RETURNING *`,
+        `UPDATE contract SET version=version+1,"values"=$2,updated_at=now() WHERE id=$1 RETURNING *`,
         [id, JSON.stringify(values)],
       );
       await addActivity(client, id, 'refreshed-from-record', { linkedNdaId: row.linked_nda_id });
@@ -747,16 +746,16 @@ export class PgContractStore {
     if (!isObject(input)) throw badRequest('Request body must be an object.');
     const rid = requestId(input.requestId);
     return withTransaction(this.pool, (client) => idempotent(client, rid, `record.contract-draft:${ndaId}`, input, async () => {
-      await client.query('SELECT id FROM workspace WHERE id=1 FOR UPDATE');
+      await client.query('SELECT id FROM workspace WHERE id=1');
       const existing = await client.query(
-        `SELECT * FROM contract WHERE linked_nda_historical_id=$1 AND status='draft' FOR UPDATE`, [ndaId],
+        `SELECT * FROM contract WHERE linked_nda_historical_id=$1 AND status='draft'`, [ndaId],
       );
       if (existing.rows[0]?.deleted_at) {
         const error = conflict('The linked draft is in the Recycle Bin.', 'linked_draft_recycled');
         error.details = { contractId: existing.rows[0].id };
         throw error;
       }
-      const nda = await client.query('SELECT id,fields,deleted_at,supplier_id FROM nda_record WHERE id=$1 FOR UPDATE', [ndaId]);
+      const nda = await client.query('SELECT id,fields,deleted_at,supplier_id FROM nda_record WHERE id=$1', [ndaId]);
       if (!nda.rows[0]) throw notFound('NDA record was not found.');
       if (nda.rows[0].deleted_at) throw conflict('This NDA record is in the Recycle Bin.', 'record_recycled');
       if (existing.rows[0]) return { contract: mapContract(existing.rows[0]) };
@@ -886,7 +885,7 @@ export class PgContractStore {
     if (!isObject(input)) throw badRequest('Request body must be an object.');
     const rid = requestId(input.requestId);
     const result = await withTransaction(this.pool, (client) => idempotent(client, rid, `document.retry:${id}`, input, async () => {
-      const sourceJob = await client.query('SELECT id FROM document_job WHERE id=$1 FOR UPDATE', [id]);
+      const sourceJob = await client.query('SELECT id FROM document_job WHERE id=$1', [id]);
       if (!sourceJob.rows[0]) throw notFound('Document job was not found.');
       const sourceItems = await client.query(
         `SELECT * FROM document_job_item WHERE job_id=$1 AND status IN ('partial','failed') ORDER BY created_at,id`, [id],
@@ -902,7 +901,7 @@ export class PgContractStore {
             id,job_id,contract_id,status,attempts,values_snapshot,template_id,template_key,template_version,
             template_checksum,template_file_name,template_bytes,docx_artifact_id,template_format,field_schema,editor_snapshot,
             custom_values_snapshot,supplier_id_snapshot,project_id_snapshot,template_family_id_snapshot,created_at,updated_at)
-           VALUES($1,$2,$3,'queued',0,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15::jsonb,$16,$17,$18,now(),now())`,
+           VALUES($1,$2,$3,'queued',0,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,now(),now())`,
           [randomUUID(), jobId, item.contract_id, JSON.stringify(item.values_snapshot), item.template_id,
             item.template_key, item.template_version, item.template_checksum, item.template_file_name,
             item.template_bytes, item.docx_artifact_id,item.template_format??'docx',JSON.stringify(item.field_schema??[]),
@@ -948,10 +947,11 @@ export class PgContractStore {
     const requested = successes.flatMap((item) => [item.docxArtifactId, item.pdfArtifactId]
       .filter((id): id is string => Boolean(id))
       .map((artifactId) => ({ artifactId, contractId: item.contractId })));
-    const metadata = requested.length
+    const artifactIds = requested.map((entry) => entry.artifactId);
+    const metadata = artifactIds.length
       ? await this.pool.query(
-        `SELECT id,file_name,octet_length(content)::integer size_bytes FROM document_artifact WHERE id=ANY($1::text[])`,
-        [requested.map((entry) => entry.artifactId)],
+        `SELECT id,file_name,length(content) size_bytes FROM document_artifact WHERE id IN (${artifactIds.map((_, index) => `$${index + 1}`).join(',')})`,
+        artifactIds,
       )
       : { rows: [] as Record<string, any>[] };
     const byId = new Map(metadata.rows.map((row) => [row.id, row]));
@@ -990,14 +990,14 @@ export class PgContractStore {
           throw conflict('A signed contract can only attach a copy from its confirmed generated version.', 'signed_file_version_mismatch');
         }
         const source = await client.query(
-          `SELECT id FROM contract_version WHERE id=$1 AND contract_id=$2 AND pdf_artifact_id IS NOT NULL FOR UPDATE`,
+          `SELECT id FROM contract_version WHERE id=$1 AND contract_id=$2 AND pdf_artifact_id IS NOT NULL`,
           [input.versionId, id],
         );
         if (!source.rows[0]) {
           throw conflict('The signed PDF must be based on a complete generated version of this contract.', 'signed_file_version_mismatch');
         }
         const next = await client.query(
-          'SELECT COALESCE(max(ordinal),0)::integer+1 ordinal FROM contract_signed_file WHERE contract_id=$1', [id],
+          'SELECT COALESCE(max(ordinal),0)+1 ordinal FROM contract_signed_file WHERE contract_id=$1', [id],
         );
         const signedFileId = randomUUID();
         const inserted = await client.query(
@@ -1035,7 +1035,7 @@ export class PgContractStore {
     const rid = requestId(input.requestId); const version = expectedVersion(input.expectedVersion);
     if (typeof input.versionId !== 'string' || !input.versionId) throw badRequest('versionId is required.');
     return withTransaction(this.pool, (client) => idempotent(client, rid, `contract.confirm:${id}`, input, async () => {
-      const workspace = await client.query('SELECT revision::text,next_number::text FROM workspace WHERE id=1 FOR UPDATE');
+      const workspace = await client.query('SELECT CAST(revision AS TEXT) revision,CAST(next_number AS TEXT) next_number FROM workspace WHERE id=1');
       if (!workspace.rows[0]) throw new Error('Database workspace is not initialized.');
       const row = await lockedContract(client, id); checkVersion(row, version); ensureDraft(row);
       if (typeof input.signedFileId !== 'string' || !input.signedFileId) {
@@ -1068,8 +1068,8 @@ export class PgContractStore {
       const values = normalizeContractValues(generated.rows[0].values_snapshot);
       if ((row.document_type ?? 'nda') === 'eoi') {
         const updated = await client.query(
-          `UPDATE contract SET version=version+1,status='signed',values=$2::jsonb,signed_version_id=$3,
-             supplier_id=$4,project_id=$5,template_family_id=$6,custom_values=$7::jsonb,signed_at=now(),updated_at=now()
+          `UPDATE contract SET version=version+1,status='signed',"values"=$2,signed_version_id=$3,
+             supplier_id=$4,project_id=$5,template_family_id=$6,custom_values=$7,signed_at=now(),updated_at=now()
              WHERE id=$1 RETURNING *`,
           [id,JSON.stringify(values),input.versionId,signedSupplierId,signedProjectId,signedFamilyId,JSON.stringify(signedCustomValues)],
         );
@@ -1088,7 +1088,7 @@ export class PgContractStore {
       let recordId: string;
       let revision: string;
       if (row.linked_nda_id) {
-        const record = await client.query('SELECT id,fields,deleted_at,supplier_id FROM nda_record WHERE id=$1 FOR UPDATE', [row.linked_nda_id]);
+        const record = await client.query('SELECT id,fields,deleted_at,supplier_id FROM nda_record WHERE id=$1', [row.linked_nda_id]);
         if (!record.rows[0]) throw conflict('The linked NDA is unavailable.', 'linked_nda_unavailable');
         if (record.rows[0].deleted_at) throw conflict('The linked NDA is in the Recycle Bin.', 'linked_nda_recycled');
         if (signedSupplierId && record.rows[0].supplier_id && signedSupplierId !== record.rows[0].supplier_id) {
@@ -1109,28 +1109,28 @@ export class PgContractStore {
         recordId = randomUUID();
         const fields: Fields = { ...createEmptyFields(), ...mapped, 'No.': Number(workspace.rows[0].next_number), Status: 'Pending' };
         const positions = await client.query(`SELECT
-          COALESCE((SELECT max(position) FROM nda_record),0)::text record,
-          COALESCE((SELECT max(position) FROM history_event),0)::text history`);
+          CAST(COALESCE((SELECT max(position) FROM nda_record),0) AS TEXT) record,
+          CAST(COALESCE((SELECT max(position) FROM history_event),0) AS TEXT) history`);
         await client.query(
           `INSERT INTO nda_record(id,position,version,source,created_at,updated_at,fields,fingerprint,supplier_id)
-           VALUES($1,$2,1,'manual',now(),now(),$3::jsonb,$4,$5)`,
+           VALUES($1,$2,1,'manual',now(),now(),$3,$4,$5)`,
           [recordId, Number(positions.rows[0].record) + 1, JSON.stringify(fields), fingerprint(fields),signedSupplierId],
         );
         await client.query(
           `INSERT INTO history_event(id,position,nda_id,type,timestamp,actor,summary,changes)
-           VALUES($1,$2,$3,'created',now(),'Local user','Created NDA record from signed contract.',$4::jsonb)`,
+           VALUES($1,$2,$3,'created',now(),'Local user','Created NDA record from signed contract.',$4)`,
           [randomUUID(), Number(positions.rows[0].history) + 1, recordId,
             JSON.stringify(Object.entries(fields).filter(([, value]) => value !== null).map(([field, after]) => ({ field, before: null, after })))],
         );
         const bumped = await client.query(
-          `UPDATE workspace SET revision=revision+1,next_number=next_number+1 WHERE id=1 RETURNING revision::text`,
+          `UPDATE workspace SET revision=revision+1,next_number=next_number+1 WHERE id=1 RETURNING CAST(revision AS TEXT) revision`,
         );
         revision = bumped.rows[0].revision;
       }
       const updated = await client.query(
-        `UPDATE contract SET version=version+1,status='signed',values=$2::jsonb,linked_nda_id=$3,
+        `UPDATE contract SET version=version+1,status='signed',"values"=$2,linked_nda_id=$3,
           linked_nda_historical_id=COALESCE(linked_nda_historical_id,$3),signed_version_id=$4,
-          supplier_id=$5,project_id=$6,template_family_id=$7,custom_values=$8::jsonb,signed_at=now(),updated_at=now()
+          supplier_id=$5,project_id=$6,template_family_id=$7,custom_values=$8,signed_at=now(),updated_at=now()
          WHERE id=$1 RETURNING *`,
         [id, JSON.stringify(values), recordId, input.versionId,signedSupplierId,signedProjectId,signedFamilyId,JSON.stringify(signedCustomValues)],
       );

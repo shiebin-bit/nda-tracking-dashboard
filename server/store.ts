@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Pool, PoolClient } from 'pg';
+import type { Pool, PoolClient } from './db.js';
 import {
   fingerprint,
   type Fields,
@@ -36,7 +36,7 @@ function iso(value: string | Date): string {
 
 async function workspace(client: Pool | PoolClient, lock = false): Promise<Workspace> {
   const result = await client.query<Workspace>(
-    `SELECT revision::text, settings, initialized_at, next_number::text FROM workspace WHERE id=1${lock ? ' FOR UPDATE' : ''}`,
+    `SELECT CAST(revision AS TEXT) revision, settings, initialized_at, CAST(next_number AS TEXT) next_number FROM workspace WHERE id=1`,
   );
   if (!result.rows[0]) throw new Error('Database workspace is not initialized.');
   return result.rows[0];
@@ -45,11 +45,11 @@ async function workspace(client: Pool | PoolClient, lock = false): Promise<Works
 async function snapshot(client: Pool | PoolClient, current?: Workspace): Promise<StateEnvelope> {
   const ws = current ?? await workspace(client);
   const [recordsResult, historyResult] = await Promise.all([
-    client.query(`SELECT n.id::text, n.reference_code, n.version, n.source, n.created_at, n.updated_at, n.renewed_from_id::text, n.fields,
-      n.supplier_id::text, s.supplier_code
+    client.query(`SELECT n.id, n.reference_code, n.version, n.source, n.created_at, n.updated_at, n.renewed_from_id, n.fields,
+      n.supplier_id, s.supplier_code
       FROM nda_record n LEFT JOIN supplier s ON s.id=n.supplier_id
       WHERE n.deleted_at IS NULL ORDER BY n.position ASC`),
-    client.query(`SELECT h.id::text, h.nda_id::text, h.type, h.timestamp, h.actor, h.summary, h.changes
+    client.query(`SELECT h.id, h.nda_id, h.type, h.timestamp, h.actor, h.summary, h.changes
       FROM history_event h
       WHERE h.nda_id IS NULL OR EXISTS (
         SELECT 1 FROM nda_record n WHERE n.id=h.nda_id AND n.deleted_at IS NULL
@@ -77,29 +77,29 @@ async function snapshot(client: Pool | PoolClient, current?: Workspace): Promise
 
 async function bump(client: PoolClient): Promise<Workspace> {
   const result = await client.query<Workspace>(`UPDATE workspace SET revision=revision+1 WHERE id=1
-    RETURNING revision::text, settings, initialized_at, next_number::text`);
+    RETURNING CAST(revision AS TEXT) revision, settings, initialized_at, CAST(next_number AS TEXT) next_number`);
   return result.rows[0];
 }
 
 async function positions(client: PoolClient): Promise<{ record: number; history: number }> {
   const result = await client.query(`SELECT
-    COALESCE((SELECT max(position) FROM nda_record),0)::text record,
-    COALESCE((SELECT max(position) FROM history_event),0)::text history`);
+    CAST(COALESCE((SELECT max(position) FROM nda_record),0) AS TEXT) record,
+    CAST(COALESCE((SELECT max(position) FROM history_event),0) AS TEXT) history`);
   return { record: Number(result.rows[0].record) + 1, history: Number(result.rows[0].history) + 1 };
 }
 
 async function insertHistory(client: PoolClient, event: Omit<HistoryEvent, 'id'> & { id?: string }, position: number): Promise<void> {
   await client.query(`INSERT INTO history_event(id,position,nda_id,type,timestamp,actor,summary,changes)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, [event.id ?? randomUUID(), position, event.ndaId ?? null,
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, [event.id ?? randomUUID(), position, event.ndaId ?? null,
     event.type, event.timestamp, event.actor, event.summary, JSON.stringify(event.changes)]);
 }
 
 type StoredRecord = NdaRecord & { deletedAt: string | null; deletedBy: string | null };
 
 async function findRecord(client: PoolClient, id: string, allowRecycled = false): Promise<StoredRecord> {
-  const result = await client.query(`SELECT n.id::text,n.reference_code,n.version,n.source,n.created_at,n.updated_at,n.renewed_from_id::text,n.fields,
-      n.supplier_id::text,s.supplier_code,n.deleted_at,n.deleted_by
-    FROM nda_record n LEFT JOIN supplier s ON s.id=n.supplier_id WHERE n.id=$1 FOR UPDATE OF n`, [id]);
+  const result = await client.query(`SELECT n.id,n.reference_code,n.version,n.source,n.created_at,n.updated_at,n.renewed_from_id,n.fields,
+      n.supplier_id,s.supplier_code,n.deleted_at,n.deleted_by
+    FROM nda_record n LEFT JOIN supplier s ON s.id=n.supplier_id WHERE n.id=$1`, [id]);
   const row = result.rows[0];
   if (!row) throw notFound('NDA record was not found.');
   if (row.deleted_at && !allowRecycled) throw conflict('This NDA record is in the Recycle Bin.', 'record_recycled');
@@ -126,8 +126,8 @@ async function replayRecycleRequest(
   action: RecycleAction,
   expectedVersion: number,
 ): Promise<boolean> {
-  const result = await client.query(`SELECT nda_id::text,type,actor,summary,changes
-    FROM history_event WHERE id=$1 FOR UPDATE`, [requestId]);
+  const result = await client.query(`SELECT nda_id,type,actor,summary,changes
+    FROM history_event WHERE id=$1`, [requestId]);
   const row = result.rows[0];
   if (!row) return false;
   const expectedSummary = action === 'recycled'
@@ -158,7 +158,7 @@ export class PgNdaStore {
   async state(): Promise<StateEnvelope> {
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      await client.query('BEGIN');
       const result = await snapshot(client);
       await client.query('COMMIT');
       return result;
@@ -171,8 +171,8 @@ export class PgNdaStore {
   }
 
   async recycledRecords(): Promise<RecycledNdaRecord[]> {
-    const result = await this.pool.query(`SELECT n.id::text,n.reference_code,n.version,n.source,n.created_at,n.updated_at,
-      n.renewed_from_id::text,n.fields,n.supplier_id::text,s.supplier_code,n.deleted_at,n.deleted_by
+    const result = await this.pool.query(`SELECT n.id,n.reference_code,n.version,n.source,n.created_at,n.updated_at,
+      n.renewed_from_id,n.fields,n.supplier_id,s.supplier_code,n.deleted_at,n.deleted_by
       FROM nda_record n LEFT JOIN supplier s ON s.id=n.supplier_id
       WHERE n.deleted_at IS NOT NULL ORDER BY n.deleted_at DESC,n.id`);
     return result.rows.map((row) => ({
@@ -194,7 +194,7 @@ export class PgNdaStore {
       const record = await findRecord(client, id);
       checkVersion(record, expectedVersion);
       const activeChild = await client.query(
-        'SELECT id FROM nda_record WHERE renewed_from_id=$1 AND deleted_at IS NULL LIMIT 1 FOR UPDATE', [id],
+        'SELECT id FROM nda_record WHERE renewed_from_id=$1 AND deleted_at IS NULL LIMIT 1', [id],
       );
       if (activeChild.rows[0]) throw conflict('Recycle the active renewal before its parent.', 'record_has_active_renewal');
       const now = new Date().toISOString();
@@ -222,7 +222,7 @@ export class PgNdaStore {
       if (!record.deletedAt) throw conflict('This NDA record is not in the Recycle Bin.', 'not_in_recycle_bin');
       checkVersion(record, expectedVersion);
       if (record.renewedFromId) {
-        const parent = await client.query('SELECT deleted_at FROM nda_record WHERE id=$1 FOR UPDATE', [record.renewedFromId]);
+        const parent = await client.query('SELECT deleted_at FROM nda_record WHERE id=$1', [record.renewedFromId]);
         if (!parent.rows[0] || parent.rows[0].deleted_at) {
           throw conflict('Restore the renewal parent first.', 'renewal_parent_recycled');
         }
@@ -243,8 +243,8 @@ export class PgNdaStore {
 
   async listArchives():Promise<RestoreArchiveSummary[]>{
     const result=await this.pool.query(`SELECT id,created_at,
-      jsonb_array_length(preimage->'records')::integer records,
-      jsonb_array_length(preimage->'history')::integer history
+      json_array_length(preimage->'records') records,
+      json_array_length(preimage->'history') history
       FROM restore_archive ORDER BY created_at DESC,id DESC LIMIT 50`);
     return result.rows.map(row=>({id:row.id,createdAt:iso(row.created_at),records:row.records,history:row.history}));
   }
@@ -260,7 +260,7 @@ export class PgNdaStore {
       validateNewFields(fields, 'form');
       const now = new Date().toISOString(); const id = randomUUID(); const pos = await positions(client);
       await client.query(`INSERT INTO nda_record(id,position,version,source,created_at,updated_at,fields,fingerprint)
-        VALUES($1,$2,1,'manual',$3,$3,$4::jsonb,$5)`, [id,pos.record,now,JSON.stringify(fields),fingerprint(fields)]);
+        VALUES($1,$2,1,'manual',$3,$3,$4,$5)`, [id,pos.record,now,JSON.stringify(fields),fingerprint(fields)]);
       await client.query('UPDATE workspace SET next_number=next_number+1 WHERE id=1');
       await insertHistory(client, { ndaId:id,type:'created',timestamp:now,actor:'Local user',summary:'Created NDA record.',changes:changesBetween(null,fields) }, pos.history);
       return snapshot(client, await bump(client));
@@ -279,7 +279,7 @@ export class PgNdaStore {
       const changes = changesBetween(record.fields,fields);
       if (!changes.length) return snapshot(client);
       const now = new Date().toISOString();
-      await client.query(`UPDATE nda_record SET version=version+1,updated_at=$2,fields=$3::jsonb,fingerprint=$4 WHERE id=$1`,
+      await client.query(`UPDATE nda_record SET version=version+1,updated_at=$2,fields=$3,fingerprint=$4 WHERE id=$1`,
         [id,now,JSON.stringify(fields),fingerprint(fields)]);
       const pos = await positions(client);
       await insertHistory(client,{ndaId:id,type:'updated',timestamp:now,actor:'Local user',summary:'Updated NDA record.',changes},pos.history);
@@ -304,7 +304,7 @@ export class PgNdaStore {
     const changes = [{ field: 'Follow-up note', before: null, after: text }];
     return withTransaction(this.pool, async (client) => {
       const ws = await workspace(client, true);
-      const replay = await client.query(`SELECT nda_id::text,type,actor,summary,changes
+      const replay = await client.query(`SELECT nda_id,type,actor,summary,changes
         FROM history_event WHERE id=$1`, [requestId]);
       if (replay.rows[0]) {
         const row = replay.rows[0];
@@ -337,9 +337,9 @@ export class PgNdaStore {
       const fresh=canonicalFields(requestedFields); fresh.Status='Pending'; fresh['No.']=Number(ws.next_number); validateNewFields(fresh,'form');
       const resolved=canonicalFields(old.fields); resolved.Status='Resolved';
       const now=new Date().toISOString(); const newId=randomUUID(); const pos=await positions(client);
-      await client.query(`UPDATE nda_record SET version=version+1,updated_at=$2,fields=$3::jsonb,fingerprint=$4 WHERE id=$1`,[id,now,JSON.stringify(resolved),fingerprint(resolved)]);
+      await client.query(`UPDATE nda_record SET version=version+1,updated_at=$2,fields=$3,fingerprint=$4 WHERE id=$1`,[id,now,JSON.stringify(resolved),fingerprint(resolved)]);
       await client.query(`INSERT INTO nda_record(id,position,version,source,created_at,updated_at,renewed_from_id,supplier_id,fields,fingerprint)
-        VALUES($1,$2,1,'renewal',$3,$3,$4,$5,$6::jsonb,$7)`,[newId,pos.record,now,id,old.supplierId??null,JSON.stringify(fresh),fingerprint(fresh)]);
+        VALUES($1,$2,1,'renewal',$3,$3,$4,$5,$6,$7)`,[newId,pos.record,now,id,old.supplierId??null,JSON.stringify(fresh),fingerprint(fresh)]);
       await client.query('UPDATE workspace SET next_number=next_number+1 WHERE id=1');
       await insertHistory(client,{ndaId:id,type:'resolved-for-renewal',timestamp:now,actor:'Local user',summary:'Resolved original NDA during renewal.',changes:changesBetween(old.fields,resolved)},pos.history);
       await insertHistory(client,{ndaId:newId,type:'renewed',timestamp:now,actor:'Local user',summary:'Created renewed NDA.',changes:changesBetween(null,fresh)},pos.history+1);
@@ -353,7 +353,7 @@ export class PgNdaStore {
     return withTransaction(this.pool,async(client)=>{
       const ws=await workspace(client,true);
       if(initial){
-        const counts=await client.query(`SELECT (SELECT count(*) FROM nda_record)::integer records,(SELECT count(*) FROM history_event)::integer history`);
+        const counts=await client.query(`SELECT (SELECT count(*) FROM nda_record) records,(SELECT count(*) FROM history_event) history`);
         if(counts.rows[0].records!==0||counts.rows[0].history!==0||ws.revision!=='0')throw conflict('Initial Excel import requires an unchanged empty database.','initial_import_not_empty');
         const marks=new Set(rows.map(fingerprint));
         const pending=rows.filter(row=>row.Status==='Pending').length; const resolved=rows.filter(row=>row.Status==='Resolved').length;
@@ -368,7 +368,7 @@ export class PgNdaStore {
         const supplied=fields['No.']; if(typeof supplied!=='number'||!Number.isSafeInteger(supplied)||supplied<1) fields['No.']=next;
         next=Math.max(next,Number(fields['No.'])+1); const id=randomUUID();
         await client.query(`INSERT INTO nda_record(id,position,version,source,created_at,updated_at,fields,fingerprint)
-          VALUES($1,$2,1,'excel',$3,$3,$4::jsonb,$5)`,[id,pos.record+inserted,now,JSON.stringify(fields),mark]);
+          VALUES($1,$2,1,'excel',$3,$3,$4,$5)`,[id,pos.record+inserted,now,JSON.stringify(fields),mark]);
         await insertHistory(client,{ndaId:id,type:initial?'initial-excel-import':'imported',timestamp:now,actor:initial?'System':'Local user',summary:initial?'Imported original Excel NDA record.':'Imported NDA record.',changes:changesBetween(null,fields)},pos.history+inserted);
         inserted++;
       }
@@ -390,7 +390,7 @@ export class PgNdaStore {
       if(ws.revision!==expected) throw conflict('Settings changed in another session. Reload and try again.','revision_conflict');
       const before=normalizeSettings(ws.settings,true); const changes=settingsChanges(before,settings); if(!changes.length)return snapshot(client,ws);
       const now=new Date().toISOString(); const pos=await positions(client);
-      await client.query('UPDATE workspace SET settings=$1::jsonb WHERE id=1',[JSON.stringify(settings)]);
+      await client.query('UPDATE workspace SET settings=$1 WHERE id=1',[JSON.stringify(settings)]);
       await insertHistory(client,{type:'settings-updated',timestamp:now,actor:'Local user',summary:'Updated reminder settings.',changes},pos.history);
       return snapshot(client,await bump(client)); });
   }
@@ -403,7 +403,7 @@ export class PgNdaStore {
     return withTransaction(this.pool,async client=>{
       await workspace(client,true);const record=await findRecord(client,id);checkVersion(record,expected);
       let supplierCode:string|null=null;
-      if(supplierId){const supplier=await client.query('SELECT supplier_code FROM supplier WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[supplierId]);
+      if(supplierId){const supplier=await client.query('SELECT supplier_code FROM supplier WHERE id=$1 AND deleted_at IS NULL',[supplierId]);
         if(!supplier.rows[0])throw notFound('Supplier was not found.');supplierCode=supplier.rows[0].supplier_code;}
       if((record.supplierId??null)===supplierId)return snapshot(client);
       const related=await client.query(`SELECT id FROM contract
@@ -438,10 +438,10 @@ export class PgNdaStore {
   private async replace(expected:string,restored:Snapshot):Promise<StateEnvelope>{
     return withTransaction(this.pool,async(client)=>{ const ws=await workspace(client,true);
       if(ws.revision!==expected)throw conflict('Data changed in another session. Reload and try again.','revision_conflict');
-      const recycled=await client.query('SELECT id FROM nda_record WHERE deleted_at IS NOT NULL LIMIT 1 FOR UPDATE');
+      const recycled=await client.query('SELECT id FROM nda_record WHERE deleted_at IS NOT NULL LIMIT 1');
       if(recycled.rows[0])throw conflict('Restore all recycled NDA records before restoring a backup.','recycle_bin_not_empty');
       const preimage=(await snapshot(client,ws)).snapshot; const archiveId=randomUUID(); const now=new Date().toISOString();
-      await client.query('INSERT INTO restore_archive(id,created_at,restored_revision,preimage) VALUES($1,$2,$3,$4::jsonb)',[archiveId,now,ws.revision,JSON.stringify(preimage)]);
+      await client.query('INSERT INTO restore_archive(id,created_at,restored_revision,preimage) VALUES($1,$2,$3,$4)',[archiveId,now,ws.revision,JSON.stringify(preimage)]);
       const existingReferences = new Map<string,string>((await client.query('SELECT id,reference_code FROM nda_record')).rows
         .map(row => [row.id as string,row.reference_code as string]));
       await client.query('DELETE FROM history_event'); await client.query('DELETE FROM nda_record');
@@ -451,12 +451,12 @@ export class PgNdaStore {
           (id=$1 OR ($2<>'' AND lower(supplier_code)=lower($2))) ORDER BY CASE WHEN id=$1 THEN 0 ELSE 1 END LIMIT 1`,[r.supplierId??'',r.supplierCode??'']);
           supplierId=supplier.rows[0]?.id??null;if(!supplierId)missingSupplierLinks++;}
         await client.query(`INSERT INTO nda_record(id,reference_code,position,version,source,created_at,updated_at,renewed_from_id,supplier_id,fields,fingerprint)
-        VALUES($1,COALESCE($2,format_display_reference('AGR-',nextval('nda_record_reference_seq'))),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)`,[r.id,existingReferences.get(r.id)??null,i+1,r.version,r.source,r.createdAt,r.updatedAt,r.renewedFromId??null,supplierId,JSON.stringify(r.fields),fingerprint(r.fields)]);}
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,[r.id,existingReferences.get(r.id)??null,i+1,r.version,r.source,r.createdAt,r.updatedAt,r.renewedFromId??null,supplierId,JSON.stringify(r.fields),fingerprint(r.fields)]);}
       for(let i=0;i<restored.history.length;i++){const h=restored.history[i];await client.query(`INSERT INTO history_event(id,position,nda_id,type,timestamp,actor,summary,changes)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,[h.id,i+1,h.ndaId??null,h.type,h.timestamp,h.actor,h.summary,JSON.stringify(h.changes)]);}
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[h.id,i+1,h.ndaId??null,h.type,h.timestamp,h.actor,h.summary,JSON.stringify(h.changes)]);}
       const next=nextNumber(restored.records);
       const restoredSettings={...restored.settings,automaticRemindersEnabled:false};
-      await client.query('UPDATE workspace SET settings=$1::jsonb,initialized_at=$2,next_number=$3 WHERE id=1',[JSON.stringify(restoredSettings),restored.initializedAt,next]);
+      await client.query('UPDATE workspace SET settings=$1,initialized_at=$2,next_number=$3 WHERE id=1',[JSON.stringify(restoredSettings),restored.initializedAt,next]);
       await insertHistory(client,{type:'backup-restored',timestamp:now,actor:'Local user',summary:'Restored backup snapshot.',changes:[]},restored.history.length+1);
       if(missingSupplierLinks)await insertHistory(client,{type:'supplier-links-missing',timestamp:now,actor:'System',summary:`${missingSupplierLinks} restored supplier link${missingSupplierLinks===1?'':'s'} could not be matched.`,changes:[]},restored.history.length+2);
       const result=await snapshot(client,await bump(client)); return {...result,archiveId};

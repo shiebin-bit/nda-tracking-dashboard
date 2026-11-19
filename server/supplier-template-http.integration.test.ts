@@ -2,25 +2,21 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { PDFDocument } from 'pdf-lib';
-import { Pool } from 'pg';
+import type { Pool } from './db';
+import { sqliteTestPool } from './sqlite-test-helper';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { COLUMNS, createEmptyFields } from '../src/core';
 import { createFfmContractDefaults } from '../src/contract-core';
 import { createHandler } from './app';
-import { migrate } from './db';
 
-const url=process.env.TEST_DATABASE_URL;
-const suite=url?describe:describe.skip;
 
-suite('supplier, project and template HTTP workflow',()=>{
-  const schema=`test_supplier_http_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  let admin:Pool;let pool:Pool;let server:ReturnType<typeof createServer>;let port:number;
+describe('supplier, project and template HTTP workflow',()=>{
+  let cleanup:()=>Promise<void>;let pool:Pool;let server:ReturnType<typeof createServer>;let port:number;
   const allowedHosts=new Set<string>();
   const email={validateAutomaticSettings:async()=>undefined};
 
   beforeAll(async()=>{
-    admin=new Pool({connectionString:url});await admin.query(`CREATE SCHEMA ${schema}`);
-    pool=new Pool({connectionString:url,options:`-c search_path=${schema}`});await migrate(pool);
+    ({pool,cleanup}=await sqliteTestPool('nda-supplier-http'));
     server=createServer(createHandler(pool,{port:3000,publicDir:'missing',allowedHosts,bodyLimitBytes:10*1024*1024,
       backupStatusDir:'server/__missing_backup_status__',converterUrl:'http://127.0.0.1:1'},email as never));
     await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));port=(server.address() as AddressInfo).port;
@@ -28,7 +24,7 @@ suite('supplier, project and template HTTP workflow',()=>{
   });
   afterAll(async()=>{
     if(server)await new Promise<void>(resolve=>server.close(()=>resolve()));
-    await pool?.end();await admin?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);await admin?.end();
+    await cleanup?.();
   });
 
   async function json(path:string,method='GET',value?:unknown){

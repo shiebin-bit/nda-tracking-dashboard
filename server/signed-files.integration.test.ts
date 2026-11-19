@@ -1,23 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { createServer, request } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Pool, type PoolClient } from 'pg';
+import type { Pool, PoolClient } from './db';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createFfmContractDefaults } from '../src/contract-core';
-import { migrate } from './db';
 import { PgContractStore, seedContractTemplates } from './contract-store';
 import { PgNdaStore } from './store';
 import { createHandler } from './app';
+import { sqliteTestPool } from './sqlite-test-helper';
 
-const url = process.env.TEST_DATABASE_URL;
-const suite = url ? describe : describe.skip;
 const pdf = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF');
 
-suite('signed PDF PostgreSQL integration', () => {
-  const schema = `signed_files_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  let admin: Pool;
+describe('signed PDF SQLite integration', () => {
   let pool: Pool;
+  let cleanup: () => Promise<void>;
   let contracts: PgContractStore;
   let ndas: PgNdaStore;
 
@@ -48,7 +44,7 @@ suite('signed PDF PostgreSQL integration', () => {
     await pool.query(
       `INSERT INTO contract_version(id,contract_id,ordinal,template_id,template_key,template_version,template_checksum,
        template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,created_at)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,now())`,
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now())`,
       [versionId, contractId, ordinal, template.id, template.template_key, template.template_version,
         template.checksum, template.content, JSON.stringify(snapshot), docxId, pdfId],
     );
@@ -61,19 +57,14 @@ suite('signed PDF PostgreSQL integration', () => {
     });
 
   beforeAll(async () => {
-    admin = new Pool({ connectionString: url });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    pool = new Pool({ connectionString: url, options: `-c search_path=${schema}` });
-    await migrate(pool);
+    ({pool,cleanup}=await sqliteTestPool('nda-signed'));
     await seedContractTemplates(pool);
     contracts = new PgContractStore(pool);
     ndas = new PgNdaStore(pool);
   });
 
   afterAll(async () => {
-    await pool?.end();
-    await admin?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-    await admin?.end();
+    await cleanup?.();
   });
 
   it('appends exact bytes, advances the current pointer, and preserves idempotency', async () => {
@@ -119,9 +110,9 @@ suite('signed PDF PostgreSQL integration', () => {
       JOIN document_artifact a ON a.id=v.pdf_artifact_id WHERE v.id=$1`, [versionId]);
     expect(Buffer.compare(generated.rows[0].content, pdf)).toBe(0);
     await expect(pool.query('UPDATE contract_signed_file SET original_file_name=$2 WHERE id=$1', [first.signedFile.id, 'mutated.pdf']))
-      .rejects.toMatchObject({ code: '55000' });
+      .rejects.toMatchObject({ code: 'ERR_SQLITE_ERROR' });
     await expect(pool.query('DELETE FROM contract_signed_file WHERE id=$1', [first.signedFile.id]))
-      .rejects.toMatchObject({ code: '55000' });
+      .rejects.toMatchObject({ code: 'ERR_SQLITE_ERROR' });
     const recycled = await contracts.recycle(created.contract.id, { requestId: randomUUID(), expectedVersion: 3 });
     expect(recycled.contract.currentSignedFileId).toBe(replacement.signedFile.id);
     const restored = await contracts.restoreRecycled(created.contract.id, {
@@ -234,7 +225,7 @@ suite('signed PDF PostgreSQL integration', () => {
         setTimeout(() => client.destroy(), 20);
       });
       await new Promise((resolve) => setTimeout(resolve, 30));
-      expect((await pool.query('SELECT count(*)::integer count FROM contract_signed_file WHERE contract_id=$1', [created.contract.id])).rows[0].count).toBe(0);
+    expect((await pool.query('SELECT count(*) count FROM contract_signed_file WHERE contract_id=$1', [created.contract.id])).rows[0].count).toBe(0);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -254,39 +245,6 @@ suite('signed PDF PostgreSQL integration', () => {
         expect(details.signedFiles.some((item) => item.id === details.currentSignedFileId)).toBe(true);
       }
       expectedVersion = uploaded.contract.version;
-    }
-  });
-});
-
-suite('signed PDF migration adoption', () => {
-  it('upgrades an existing 004 schema without altering generated artifacts', async () => {
-    const schema = `signed_upgrade_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    const admin = new Pool({ connectionString: url });
-    let pool: Pool | undefined;
-    try {
-      await admin.query(`CREATE SCHEMA ${schema}`);
-      pool = new Pool({ connectionString: url, options: `-c search_path=${schema}` });
-      for (const migration of ['001_initial.sql', '002_email_delivery.sql', '003_contracts.sql', '004_recycle_bin.sql']) {
-        await pool.query(await readFile(`migrations/${migration}`, 'utf8'));
-      }
-      await pool.query('CREATE TABLE schema_migration(name text PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now())');
-      await pool.query(`INSERT INTO schema_migration(name) VALUES
-        ('001_initial.sql'),('002_email_delivery.sql'),('003_contracts.sql'),('004_recycle_bin.sql')`);
-      const contractId = randomUUID(); const artifactId = randomUUID(); const bytes = Buffer.from('%PDF-preserved-generated-bytes');
-      await pool.query(`INSERT INTO contract(id,version,status,values,created_at,updated_at)
-        VALUES($1,1,'draft','{}'::jsonb,now(),now())`, [contractId]);
-      await pool.query(`INSERT INTO document_artifact(id,contract_id,kind,file_name,content_type,content,checksum,created_at)
-        VALUES($1,$2,'pdf','generated.pdf','application/pdf',$3,'original-checksum',now())`, [artifactId, contractId, bytes]);
-      await migrate(pool);
-      const result = await pool.query(`SELECT c.current_signed_file_id,a.content,a.checksum
-        FROM contract c JOIN document_artifact a ON a.contract_id=c.id WHERE c.id=$1`, [contractId]);
-      expect(result.rows[0]).toMatchObject({ current_signed_file_id: null, checksum: 'original-checksum' });
-      expect(Buffer.compare(result.rows[0].content, bytes)).toBe(0);
-      expect((await pool.query("SELECT name FROM schema_migration WHERE name='005_signed_files.sql'")).rowCount).toBe(1);
-    } finally {
-      await pool?.end();
-      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-      await admin.end();
     }
   });
 });

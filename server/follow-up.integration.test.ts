@@ -1,21 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { Pool } from 'pg';
+import type { Pool } from './db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createEmptyFields, type Fields } from '../src/core';
-import { migrate } from './db';
 import { PgNdaStore } from './store';
+import { sqliteTestPool } from './sqlite-test-helper';
 
-const url=process.env.TEST_DATABASE_URL;
-const suite=url?describe:describe.skip;
-suite('PostgreSQL follow-up notes',()=>{
-  const schema=`test_follow_up_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  let admin:Pool; let pool:Pool; let store:PgNdaStore;
+describe('SQLite follow-up notes',()=>{
+  let pool:Pool; let store:PgNdaStore; let cleanup:()=>Promise<void>;
   const fields=(recipient:string):Fields=>({...createEmptyFields(),Recipient:recipient,'Date of Agreement':'2026-01-01',Duration:1,UOM:'years',PIC:'Lee',Status:'Pending'});
   beforeAll(async()=>{
-    admin=new Pool({connectionString:url}); await admin.query(`CREATE SCHEMA ${schema}`);
-    pool=new Pool({connectionString:url,options:`-c search_path=${schema}`}); await migrate(pool); store=new PgNdaStore(pool);
+    ({pool,cleanup}=await sqliteTestPool('nda-follow-up')); store=new PgNdaStore(pool);
   });
-  afterAll(async()=>{await pool?.end();await admin?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);await admin?.end();});
+  afterAll(async()=>{await cleanup?.();});
 
   it('adds, trims, replays, and restores a note without duplicate bumps',async()=>{
     const created=await store.create({fields:fields('Acme')}); const record=created.snapshot.records[0]; const requestId=randomUUID();

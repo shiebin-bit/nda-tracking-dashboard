@@ -60,7 +60,7 @@ export function AutomaticBackups() {
       {error && <div role="alert"><p className="error-text">{error}{status ? ' Last known backup information is shown below.' : ''}</p>{!status && <button type="button" className="text-button" disabled={loading} onClick={() => setRetry(value => value + 1)}><RefreshCw size={14}/>Try again</button>}</div>}
       {status && <>
         <div className="automatic-backup-state"><Badge tone={tone}>{error ? 'Status unavailable' : labels[status.state]}</Badge><button type="button" className="text-button" disabled={loading} onClick={() => setRetry(value => value + 1)}><RefreshCw size={14}/>Refresh status</button></div>
-        {status.state === 'unavailable' && <p role="alert" className="error-text backup-status-warning">The backup worker status cannot be verified. Keep Docker running and check the backup service.</p>}
+        {status.state === 'unavailable' && <p role="alert" className="error-text backup-status-warning">The backup worker status cannot be verified. Keep NDA Tracker running and check the local backup service.</p>}
         {status.state === 'failed' && <p role="alert" className="error-text backup-status-warning">{status.lastAttempt?.error || 'The latest backup attempt failed. Earlier successful backups are kept.'}</p>}
         {warning && <p role="status" className="backup-status-warning">{warning}</p>}
         <dl className="automatic-backup-details">
@@ -71,8 +71,8 @@ export function AutomaticBackups() {
           {status.state === 'running' && status.lastAttempt && <div><dt>Current attempt started</dt><dd>{timeLabel(status.lastAttempt.startedAt)}</dd></div>}
         </dl>
       </>}
-      <p className="automatic-backup-caption">Files are in the project’s <strong>backups/automatic</strong> folder. Keep this computer and Docker running. The first backup starts automatically; a missed daily backup runs when the service starts again.</p>
-      <p className="automatic-backup-caption">Use the JSON backup below for recovery inside the website. Full database files also contain email records and require database recovery tools.</p>
+      <p className="automatic-backup-caption">Files are in your workspace’s <strong>backups</strong> folder. Keep this computer and NDA Tracker running. The first backup starts automatically; a missed daily backup runs when the service starts again.</p>
+      <p className="automatic-backup-caption">Use the JSON backup below for recovery inside the website. Use Complete workspace backup in the desktop settings to save or restore all documents and email records.</p>
     </div>
   </section>;
 }

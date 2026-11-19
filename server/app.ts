@@ -3,7 +3,8 @@ import { stat } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
-import type { Pool } from 'pg';
+import {timingSafeEqual} from 'node:crypto';
+import type { Pool } from './db.js';
 import { AppError, badRequest, notFound } from './errors.js';
 import type { ServerConfig } from './config.js';
 import { PgNdaStore } from './store.js';
@@ -90,6 +91,11 @@ async function body(request: IncomingMessage, limit: number): Promise<unknown> {
 }
 
 function guard(request: IncomingMessage, config: ServerConfig): void {
+  if(config.desktopMode){
+    const cookie=request.headers.cookie?.split(';').map(v=>v.trim()).find(v=>v.startsWith('nda-desktop-session='))?.slice('nda-desktop-session='.length);
+    const actual=Buffer.from(cookie??'');const expected=Buffer.from(config.desktopToken??'');
+    if(!expected.length||actual.length!==expected.length||!timingSafeEqual(actual,expected))throw new AppError(403,'desktop_session_required','Open NDA Tracker from its desktop application.');
+  }
   const host = request.headers.host?.toLowerCase();
   if (!host || !config.allowedHosts.has(host)) throw new AppError(421, 'invalid_host', 'Host is not allowed.');
   const origin = request.headers.origin;

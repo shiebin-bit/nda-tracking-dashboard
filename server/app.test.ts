@@ -1,6 +1,6 @@
 import { createServer, request } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { Pool } from 'pg';
+import type { Pool } from './db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHandler } from './app';
 import { PgNdaStore } from './store';

@@ -2,23 +2,19 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Pool } from 'pg';
+import type { Pool } from './db';
 import { PDFDocument } from 'pdf-lib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { contractValuesToTracking, createFfmContractDefaults } from '../src/contract-core';
 import { createEmptyFields } from '../src/core';
-import { migrate } from './db';
 import { PgContractStore, seedContractTemplates } from './contract-store';
 import { PgNdaStore } from './store';
 import { DocumentWorker } from './document-worker';
+import { sqliteTestPool } from './sqlite-test-helper';
 
-const url = process.env.TEST_DATABASE_URL;
-const suite = url ? describe : describe.skip;
-
-suite('contract PostgreSQL store integration', () => {
-  const schema = `contracts_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  let admin: Pool;
+describe('contract SQLite store integration', () => {
   let pool: Pool;
+  let cleanup: () => Promise<void>;
   let contracts: PgContractStore;
   let ndas: PgNdaStore;
 
@@ -46,19 +42,14 @@ suite('contract PostgreSQL store integration', () => {
   ]);
 
   beforeAll(async () => {
-    admin = new Pool({ connectionString: url });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    pool = new Pool({ connectionString: url, options: `-c search_path=${schema}` });
-    await migrate(pool);
+    ({pool,cleanup}=await sqliteTestPool('nda-contract'));
     await seedContractTemplates(pool);
     contracts = new PgContractStore(pool);
     ndas = new PgNdaStore(pool);
   });
 
   afterAll(async () => {
-    await pool?.end();
-    await admin?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-    await admin?.end();
+    await cleanup?.();
   });
 
   it('provides editable NDA and EOI templates without resetting saved edits on restart', async () => {
@@ -70,7 +61,7 @@ suite('contract PostgreSQL store integration', () => {
     await seedContractTemplates(pool);
     const saved = (await pool.query('SELECT name,version FROM template_draft WHERE id=$1',[draft.id])).rows[0];
     expect(saved).toEqual({name:'Saved working copy',version:2});
-    expect(Number((await pool.query('SELECT count(*) FROM template_draft')).rows[0].count)).toBe(2);
+    expect(Number((await pool.query('SELECT count(*) count FROM template_draft')).rows[0].count)).toBe(2);
   });
 
   it('keeps request replay idempotent, detects reuse, and enforces optimistic versions', async () => {
@@ -114,7 +105,7 @@ suite('contract PostgreSQL store integration', () => {
       await pool.query(
         `INSERT INTO contract_version(id,contract_id,ordinal,template_id,template_key,template_version,template_checksum,
          template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,created_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,now())`,
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now())`,
         [versionId, contractId, ordinal, template.id, template.template_key, template.template_version,
           template.checksum, template.content, JSON.stringify(values), docxId, pdfId],
       );
@@ -136,7 +127,7 @@ suite('contract PostgreSQL store integration', () => {
       await pool.query(
         `INSERT INTO document_job_item(id,job_id,contract_id,status,attempts,values_snapshot,template_id,
          template_key,template_version,template_checksum,template_file_name,template_bytes,version_id,created_at,updated_at)
-         VALUES($1,$2,$3,'partial',3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12,$12)`,
+         VALUES($1,$2,$3,'partial',3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`,
         [itemId, jobId, staleGeneration.contract.id, JSON.stringify(staleValues), template.id,
           template.template_key, template.template_version, template.checksum, template.file_name,
           template.content, versionId, createdAt],
@@ -158,6 +149,10 @@ suite('contract PostgreSQL store integration', () => {
     expect(listed.find((item) => item.id === currentGeneration.contract.id)?.latestGeneration).toEqual({
       id: currentVersionId, jobId: null, ordinal: 1, complete: true, matchesDraft: true,
     });
+    const supplierId=randomUUID();
+    await pool.query(`INSERT INTO supplier(id,supplier_code,company_name,created_at,updated_at) VALUES($1,'STALE-QA','Changed classification',now(),now())`,[supplierId]);
+    await contracts.update(currentGeneration.contract.id,{expectedVersion:currentGeneration.contract.version,values:currentGeneration.contract.values,supplierId});
+    expect((await contracts.listContracts()).find(item=>item.id===currentGeneration.contract.id)?.latestGeneration?.matchesDraft).toBe(false);
   });
 
   it('lists every active document job in addition to the latest 20 completed jobs', async () => {
@@ -233,7 +228,7 @@ suite('contract PostgreSQL store integration', () => {
     await pool.query(
       `INSERT INTO contract_version(id,contract_id,ordinal,template_id,template_key,template_version,template_checksum,
        template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,created_at)
-       VALUES($1,$2,1,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,now())`,
+       VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,now())`,
       [versionId, created.contract.id, item.template_id, item.template_key, item.template_version,
         item.template_checksum, item.template_bytes, JSON.stringify(item.values_snapshot), docxId, pdfId],
     );
@@ -268,10 +263,10 @@ suite('contract PostgreSQL store integration', () => {
     await pool.query(`INSERT INTO template_family(id,family_key,name,document_type,template_format,active,published_template_id,created_at,updated_at)
       VALUES($1,'test-eoi-pdf','Test EOI PDF','eoi','pdf',true,NULL,now(),now())`,[familyId]);
     await pool.query(`INSERT INTO contract_template(id,template_key,template_version,name,file_name,mime_type,content,checksum,tags,active,family_id,document_type,template_format,field_schema,editor_snapshot)
-      VALUES($1,'test-eoi-pdf','1','Test EOI PDF','test-eoi.pdf','application/pdf',$2,$3,$4::jsonb,true,$5,'eoi','pdf',$6::jsonb,$7::jsonb)`,
+      VALUES($1,'test-eoi-pdf','1','Test EOI PDF','test-eoi.pdf','application/pdf',$2,$3,$4,1,$5,'eoi','pdf',$6,$7)`,
       [templateId,pdfBytes,randomUUID(),JSON.stringify(['project_name']),familyId,JSON.stringify(fields),JSON.stringify(snapshot)]);
     await pool.query('UPDATE template_family SET published_template_id=$2 WHERE id=$1',[familyId,templateId]);
-    const before=await pool.query('SELECT revision::text,(SELECT count(*)::integer FROM nda_record) nda_count FROM workspace WHERE id=1');
+    const before=await pool.query('SELECT CAST(revision AS TEXT) revision,(SELECT count(*) FROM nda_record) nda_count FROM workspace WHERE id=1');
     const nda=await contracts.create({requestId:randomUUID(),documentType:'nda',supplierId,projectId,values:completeValues()});
     expect((await contracts.listContracts()).find((item)=>item.id===nda.contract.id)?.signedEoiMissing).toBe(true);
     const created=await contracts.create({requestId:randomUUID(),documentType:'eoi',supplierId,projectId,templateFamilyId:familyId,values:createFfmContractDefaults()});
@@ -289,7 +284,7 @@ suite('contract PostgreSQL store integration', () => {
     const uploaded=await attachSigned(created.contract.id,created.contract.version,version.id);
     const confirmed=await contracts.confirmSigned(created.contract.id,{requestId:randomUUID(),expectedVersion:uploaded.contract.version,versionId:version.id,signedFileId:uploaded.signedFile.id});
     expect(confirmed.recordId).toBeNull();expect(confirmed.contract.status).toBe('signed');
-    const after=await pool.query('SELECT revision::text,(SELECT count(*)::integer FROM nda_record) nda_count FROM workspace WHERE id=1');
+    const after=await pool.query('SELECT CAST(revision AS TEXT) revision,(SELECT count(*) FROM nda_record) nda_count FROM workspace WHERE id=1');
     expect(after.rows[0]).toEqual(before.rows[0]);
     expect((await contracts.listContracts()).find((item)=>item.id===nda.contract.id)?.signedEoiMissing).toBe(false);
   });
@@ -415,8 +410,8 @@ suite('contract PostgreSQL store integration', () => {
       await firstWorker.stop();
     }
     await pool.query(
-      `UPDATE document_job SET status='running',lease_owner='expired',lease_until=now()-interval '1 second' WHERE id=$1`,
-      [queued.job.id],
+      `UPDATE document_job SET status='running',lease_owner='expired',lease_until=$2 WHERE id=$1`,
+      [queued.job.id,new Date(Date.now()-1_000).toISOString()],
     );
     await pool.query(
       `UPDATE document_job_item SET status='running',next_attempt_at=now() WHERE job_id=$1`, [queued.job.id],
@@ -463,8 +458,8 @@ suite('contract PostgreSQL store integration', () => {
       [partialJob.job.id, docxId],
     );
     await pool.query(
-      `UPDATE document_job SET status='running',lease_owner='expired',lease_until=now()-interval '1 second'
-       WHERE id=$1 OR id=$2`, [failedJob.job.id, partialJob.job.id],
+      `UPDATE document_job SET status='running',lease_owner='expired',lease_until=$3
+       WHERE id=$1 OR id=$2`, [failedJob.job.id, partialJob.job.id,new Date(Date.now()-1_000).toISOString()],
     );
     const worker = new DocumentWorker(pool, 'http://127.0.0.1:1', 10, 10);
     try {
@@ -503,7 +498,7 @@ suite('contract PostgreSQL store integration', () => {
     await pool.query(
       `INSERT INTO contract_version(id,contract_id,ordinal,template_id,template_key,template_version,template_checksum,
        template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,created_at)
-       VALUES($1,$2,1,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,now())`,
+       VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,now())`,
       [versionId, draft.contract.id, template.id, template.template_key, template.template_version,
         template.checksum, template.content, JSON.stringify(draft.contract.values), docxId, pdfId],
     );
@@ -543,7 +538,7 @@ suite('contract PostgreSQL store integration', () => {
     await pool.query(
       `INSERT INTO contract_version(id,contract_id,ordinal,template_id,template_key,template_version,template_checksum,
        template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,created_at)
-       VALUES($1,$2,1,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,now())`,
+       VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,now())`,
       [versionId, draft.contract.id, template.id, template.template_key, template.template_version,
         template.checksum, template.content, JSON.stringify(current.values), docxId, pdfId],
     );
@@ -571,7 +566,7 @@ suite('contract PostgreSQL store integration', () => {
     await pool.query(
       `INSERT INTO contract_version(id,contract_id,ordinal,template_id,template_key,template_version,template_checksum,
        template_bytes,values_snapshot,docx_artifact_id,pdf_artifact_id,created_at)
-       VALUES($1,$2,1,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,now())`,
+       VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,now())`,
       [secondVersion, secondDraft.contract.id, template.id, template.template_key, template.template_version,
         template.checksum, template.content, JSON.stringify(secondDraft.contract.values), secondDocx, secondPdf],
     );

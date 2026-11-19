@@ -1,5 +1,7 @@
 # Developer Guide
 
+> Desktop development now requires Node.js 24. Use `npm run desktop:dev`, `npm run desktop:prepare` and `npm run desktop:dist`; see [Windows desktop build instructions](WINDOWS_DESKTOP.md). Runtime persistence is SQLite. Docker/PostgreSQL details below describe the earlier edition and its migration source.
+
 ## Requirements
 
 - Node.js 22.12+ and npm compatible with the lockfile
