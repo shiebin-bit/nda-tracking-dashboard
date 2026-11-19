@@ -17,6 +17,16 @@ const TABLES = [
 
 type SourceClient = pg.PoolClient;
 
+// A PostgreSQL DATE is a calendar day, not an instant. The default pg parser
+// creates local midnight, which becomes the preceding UTC day in Malaysia.
+// Keep DATE values as YYYY-MM-DD so imported daily jobs retain their keys.
+export const postgresImportTypes: pg.CustomTypesConfig = {
+  getTypeParser(oid, format) {
+    if (oid === 1082 && format !== 'binary') return (value: string) => value;
+    return pg.types.getTypeParser(oid, format);
+  },
+};
+
 function identifier(value: string): string {
   if (!/^[a-z_][a-z0-9_]*$/i.test(value)) throw new Error(`Unsafe SQL identifier: ${value}`);
   return `"${value}"`;
@@ -117,7 +127,7 @@ export interface PostgresImportReport {
 /** Imports a read-only PostgreSQL snapshot into a newly initialized SQLite file. */
 export async function importPostgresToSqlite(destination: Pool, connectionString: string): Promise<PostgresImportReport> {
   if (!connectionString.trim()) throw new Error('A PostgreSQL connection string is required.');
-  const sourcePool = new pg.Pool({ connectionString, max: 1, connectionTimeoutMillis:10_000 });
+  const sourcePool = new pg.Pool({ connectionString, max: 1, connectionTimeoutMillis:10_000, types: postgresImportTypes });
   const source = await sourcePool.connect().catch(async error=>{await sourcePool.end();throw error;});
   try {
     await source.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');

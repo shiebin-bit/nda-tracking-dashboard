@@ -49,7 +49,9 @@ The existing **NDA register JSON** export remains available. It covers the activ
 
 The old Docker database is not bundled into the installer. A separate read-only import command migrates a PostgreSQL snapshot to a new SQLite file, preserves references and binary files, verifies the result, and leaves automatic reminders off. Keep a full PostgreSQL backup and the original installation until the migrated desktop workspace has been reviewed. Do not run two enabled reminder services for the same register.
 
-Build the source, then set `NDA_IMPORT_DATABASE_URL` to your PostgreSQL connection string and `NDA_SQLITE_PATH` to a new output file. Keep the connection string private; do not paste it into issues or screenshots. Run:
+Use the latest source from `main` and build it before importing. The importer bundled in the original `v0.2.0-beta.1` installer can convert PostgreSQL calendar dates into timestamps on non-UTC hosts; do not use that bundled command for migration. The updated source preserves daily mail-task dates as `YYYY-MM-DD`, so an already-processed day keeps its duplicate-send protection. Normal desktop operation and fresh workspaces do not use this importer.
+
+Set `NDA_IMPORT_DATABASE_URL` to your PostgreSQL connection string and `NDA_SQLITE_PATH` to a new output file. Keep the connection string private; do not paste it into issues or screenshots. Run:
 
 ```powershell
 node dist/server/server/import-postgres-to-sqlite.js --help
@@ -58,7 +60,7 @@ node dist/server/server/import-postgres-to-sqlite.js
 
 The source must have the legacy migrations through `010_display_references.sql`. The tool reads it in a repeatable-read, read-only transaction, verifies every imported column and binary checksum, preserves display-reference sequence positions, and refuses an existing target. Open the desktop app and use **Restore complete backup** to review this file in a local workspace. The importer does not start either reminder service or copy the email credential.
 
-Validation on 19 November used an isolated PostgreSQL source with synthetic NDA/EOI documents and signed files. The working Docker database was offline and was not migrated or changed.
+Initial validation on 19 November used an isolated PostgreSQL source with synthetic NDA/EOI documents and signed files. A subsequent local cutover verified the working database against all 19 imported business tables, 29 binary snapshots and all mail-task calendar dates. Migration pauses reminders in the destination. Before enabling them there, stop the old application and pause its stored reminder setting; preserve a full PostgreSQL backup and the original volume for rollback.
 
 ## Build the installer from source
 
