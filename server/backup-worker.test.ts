@@ -14,6 +14,7 @@ const completeToc=REQUIRED_TABLES.map(table=>`TABLE DATA public ${table}`).join(
 
 describe('automatic backup worker',()=>{
   it('requires every persisted table including signed PDF copies',()=>{
+    expect(REQUIRED_TABLES).toContain('document_settings');
     expect(REQUIRED_TABLES).toContain('contract_signed_file');
     expect(REQUIRED_TABLES).toContain('supplier');
     expect(REQUIRED_TABLES).toContain('project');

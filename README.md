@@ -27,6 +27,8 @@
 
 **Desktop edition:** this source revision targets a standalone Windows x64 installer with a bundled runtime, per-user SQLite database and local PDF conversion. Users download the installer from GitHub Releases rather than cloning the repository or installing Docker. See the [Windows installation and recovery guide](docs/WINDOWS_DESKTOP.md).
 
+Download the [v0.2.0-beta.4 Windows preview](https://github.com/shiebin-bit/nda-tracking-dashboard/releases/tag/v0.2.0-beta.4) and follow the [English installation guide](docs/INSTALL.md). The installer includes the runtime and PDF converter. New users receive an empty personal workspace with packaged templates; your local records, uploaded templates, signed files and email credentials are not included in the release.
+
 The previous PostgreSQL/Docker edition is preserved at commit [`f51e672`](https://github.com/shiebin-bit/nda-tracking-dashboard/commit/f51e672). Docker commands in older guides apply to that version. Do not rebuild an existing PostgreSQL deployment from this desktop source before migrating its data.
 
 Preparing an NDA and following it up often involves an Excel register, a Word template, a folder of signed PDFs, and a separate reminder flow. NDA Tracker brings those steps into one local workspace.
@@ -52,7 +54,13 @@ Users select an NDA or EOI template, prepare documents, generate files and keep 
 - Windows desktop installer with bundled PDF conversion, system tray operation and optional Windows startup
 - Stable website references for agreements (`AGR-000001`) and documents (`DOC-000001`), including existing records
 - Supplier IDs and shared projects, with explicit assignment of existing agreements/documents and review of linked groups
-- Versioned template drafts: DOCX paragraph/cell editing and fixed-layout PDF field placement
+- Searchable supplier/project selection by ID or name in Documents
+- Configurable Word/PDF/ZIP download names using saved generation details
+- Versioned template drafts with published-version history and protected copy-to-draft
+- Select text to bind a field, replace repeated text, undo edits and inspect field locations
+- DOCX paragraph/cell editing with preserved run styles, plus fixed-layout PDF field placement and bold field values
+- Controlled Word paragraph and simple table-row insertion/deletion, with field-impact confirmation and preview before publishing
+- Published-version selection when creating a document or generating from its editor
 - Up to ten CC recipients for the daily reminder digest
 
 ## Workspace Snapshot
@@ -355,6 +363,8 @@ Do not point tests or an import command at an active desktop data file. The Post
 
 Coverage includes date/milestone boundaries, Excel safety and duplicate handling, version conflicts, atomic renewal, follow-up notes, email scheduling and uncertain outcomes, document job recovery, signed-file validation and confirmation, and recycle-bin restoration.
 
+For **v0.2.0-beta.4**, checks on **24 November 2026** pass: **179 unit tests**, **66 SQLite integration tests**, and the production build. Browser and real-converter checks cover structural template editing, field cleanup/Undo, immutable publication and mobile layout. See [release notes](docs/RELEASE_NOTES_v0.2.0-beta.4.md) and the [verification record](docs/DESKTOP_VERIFICATION.md) for limits.
+
 Desktop checks on **19 November 2026** passed: **135 unit tests**, **49 SQLite integration tests**, and client/server production compilation. The PostgreSQL engine's three incremental-migration tests were replaced by SQLite lifecycle checks; the remaining application integration suites run against disposable SQLite files with no skipped suites. An isolated PostgreSQL import also preserved generated files, signed PDFs, full CC lists and reference sequence gaps, while pausing reminders only in the destination. No real email was sent.
 
 The packaged desktop app was exercised through NDA/EOI generation, signed-file upload, idempotent confirmation, complete backup/restore and close-to-tray operation. See the [desktop verification record](docs/DESKTOP_VERIFICATION.md) for installer checks and remaining validation limits.
@@ -365,7 +375,7 @@ On **19 November 2026**, `npm audit --omit=dev` reported **zero advisories** for
 
 ## CI
 
-[ci.yml](.github/workflows/ci.yml) runs unit tests, SQLite integration tests and the client/server build for pushes and pull requests targeting `main`. It needs no database service or Brevo credentials. PDF conversion in store integration tests uses a local test service. [windows-desktop.yml](.github/workflows/windows-desktop.yml) is a manual Windows build that prepares the bundled converter, creates the installer and uploads it as a workflow artifact.
+[ci.yml](.github/workflows/ci.yml) runs unit tests, SQLite integration tests and the client/server build for pushes and pull requests targeting `main`. It needs no database service or Brevo credentials. PDF conversion in store integration tests uses a local test service. [windows-desktop.yml](.github/workflows/windows-desktop.yml) is a manual Windows build that prepares the bundled converter, creates the installer and uploads it as a workflow artifact. An optional matching release tag attaches installer/checksum assets to an existing draft release; publication remains a separate step.
 
 The workflow verifies the repository; it does not deploy the dashboard or publish an image.
 

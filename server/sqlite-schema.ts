@@ -1,9 +1,12 @@
 /** Stable identifiers used by restore/import validation. */
 export const SQLITE_APPLICATION_ID=1313096788;
-export const SQLITE_USER_VERSION=1;
-export const SQLITE_MIGRATION_NAME='sqlite-v1';
+export const SQLITE_LEGACY_USER_VERSION=1;
+export const SQLITE_USER_VERSION=2;
+export const SQLITE_MIGRATION_V1='sqlite-v1';
+export const SQLITE_MIGRATION_V2='sqlite-v2';
 
-export const SQLITE_SCHEMA=String.raw`
+/** Frozen, released v1 schema. Never edit: its exact signature gates safe migration. */
+export const SQLITE_SCHEMA_V1=String.raw`
 CREATE TABLE IF NOT EXISTS schema_migration(name TEXT PRIMARY KEY,applied_at TEXT NOT NULL DEFAULT(now()));
 CREATE TABLE IF NOT EXISTS workspace(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL DEFAULT 0,settings TEXT NOT NULL CHECK(json_valid(settings)),initialized_at TEXT NOT NULL,next_number INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS supplier(id TEXT PRIMARY KEY,supplier_code TEXT NOT NULL COLLATE NOCASE UNIQUE,company_name TEXT NOT NULL,registration_number TEXT NOT NULL DEFAULT '',address TEXT NOT NULL DEFAULT '',contact_name TEXT NOT NULL DEFAULT '',contact_designation TEXT NOT NULL DEFAULT '',contact_address TEXT NOT NULL DEFAULT '',contact_email TEXT NOT NULL DEFAULT '',version INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,deleted_at TEXT,deleted_by TEXT,CHECK((deleted_at IS NULL)=(deleted_by IS NULL)));
@@ -50,3 +53,13 @@ CREATE TRIGGER IF NOT EXISTS contract_historical_link_immutable BEFORE UPDATE OF
 CREATE TRIGGER IF NOT EXISTS published_template_immutable BEFORE UPDATE OF id,family_id,template_key,template_version,name,file_name,mime_type,content,checksum,tags,document_type,template_format,field_schema,editor_snapshot ON contract_template BEGIN SELECT RAISE(ABORT,'published template versions are immutable');END;
 INSERT OR IGNORE INTO schema_migration(name) VALUES('sqlite-v1');
 `;
+
+export const SQLITE_MIGRATION_SQL_V2=String.raw`
+CREATE TABLE document_settings(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL DEFAULT 0 CHECK(revision>=0),filename_fields TEXT NOT NULL CHECK(json_valid(filename_fields) AND json_type(filename_fields)='array'));
+INSERT INTO document_settings(id,revision,filename_fields) VALUES(1,0,'["type","supplier","project","date"]');
+CREATE TRIGGER published_template_immutable_delete BEFORE DELETE ON contract_template BEGIN SELECT RAISE(ABORT,'published template versions are immutable');END;
+INSERT INTO schema_migration(name) VALUES('sqlite-v2');
+`;
+
+/** Final schema used only to calculate/verify the current exact schema signature. */
+export const SQLITE_SCHEMA=`${SQLITE_SCHEMA_V1}\n${SQLITE_MIGRATION_SQL_V2}`;

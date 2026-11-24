@@ -76,11 +76,16 @@ async function restoreBackup(){
   const chosen=await dialog.showOpenDialog(win,{title:'Restore complete NDA Tracker backup',properties:['openFile'],filters:[{name:'NDA Tracker database',extensions:['sqlite']}]});
   if(chosen.canceled||!chosen.filePaths[0])return {canceled:true};
   const source=path.resolve(chosen.filePaths[0]);if(source===database)throw new Error('Choose a saved backup, not the active database.');
-  const {verifySqliteBackup}=await import(pathToFileURL(path.join(appRoot,'dist','server','server','sqlite-backup.js')).href);await verifySqliteBackup(source);
+  const {verifySqliteBackup}=await import(pathToFileURL(path.join(appRoot,'dist','server','server','sqlite-backup.js')).href);await verifySqliteBackup(source,{allowLegacyV1:true});
   const answer=await dialog.showMessageBox(win,{type:'warning',title:'Restore complete workspace?',message:'Replace this computer’s workspace with the selected backup?',detail:'Agreements, documents, files and history will be restored. A safety backup is saved first. Automatic reminders will be paused. Your email connection stays on this computer.',buttons:['Cancel','Restore workspace'],defaultId:0,cancelId:0,noLink:true});
   if(answer.response!==1)return {canceled:true};
   const staged=path.join(dataRoot,`restore-${randomUUID()}.sqlite`);
-  try{await snapshot(source,staged);await verifySqliteBackup(staged);pauseReminders(staged);}
+  try{
+    await snapshot(source,staged);await verifySqliteBackup(staged,{allowLegacyV1:true});
+    const {Pool}=await import(pathToFileURL(path.join(appRoot,'dist','server','server','db.js')).href);
+    const stagedPool=new Pool(staged,{skipMigrationSafetyBackup:true});await stagedPool.end();
+    await verifySqliteBackup(staged);pauseReminders(staged);
+  }
   catch(error){for(const suffix of ['','-wal','-shm'])await fs.rm(`${staged}${suffix}`,{force:true}).catch(()=>{});throw error;}
   const safety=path.join(backupDirectory,`before-restore-${Date.now()}.sqlite`);
   restarting=true;win.setEnabled(false);let replaced=false;let stopped=false;

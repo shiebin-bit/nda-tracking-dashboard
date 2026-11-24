@@ -7,26 +7,49 @@ import {assertBackupDestination,type Pool} from './db.js';
 import type {BackupStatus} from '../src/backup-types.js';
 import {backupPlan} from './backup-worker.js';
 import {readBackupStatus} from './backup-status.js';
-import {SQLITE_APPLICATION_ID,SQLITE_SCHEMA,SQLITE_USER_VERSION} from './sqlite-schema.js';
+import {parseDocumentNamingSettings} from '../src/document-settings.js';
+import {
+  SQLITE_APPLICATION_ID,
+  SQLITE_LEGACY_USER_VERSION,
+  SQLITE_MIGRATION_V1,
+  SQLITE_MIGRATION_V2,
+  SQLITE_SCHEMA,
+  SQLITE_SCHEMA_V1,
+  SQLITE_USER_VERSION,
+} from './sqlite-schema.js';
 
-const TABLES=['workspace','nda_record','history_event','restore_archive','supplier','project','template_family','template_draft','contract','contract_template','contract_version','contract_activity','contract_request','document_job','document_job_item','document_artifact','contract_signed_file','email_job','email_delivery','email_request','schema_migration','reference_counter'];
-let schemaSignature:string|undefined;
+const LEGACY_TABLES=['workspace','nda_record','history_event','restore_archive','supplier','project','template_family','template_draft','contract','contract_template','contract_version','contract_activity','contract_request','document_job','document_job_item','document_artifact','contract_signed_file','email_job','email_delivery','email_request','schema_migration','reference_counter'];
+const TABLES=[...LEGACY_TABLES,'document_settings'];
+const schemaSignatures=new Map<number,string>();
 function signature(db:DatabaseSync):string{return JSON.stringify(db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY name").all().map(row=>({...row,sql:String(row.sql).replace(/\s+/g,' ').trim()})));}
-function expectedSchema():string{if(!schemaSignature){const db=new DatabaseSync(':memory:');try{db.function('now',()=>new Date().toISOString());db.exec(SQLITE_SCHEMA);schemaSignature=signature(db);}finally{db.close();}}return schemaSignature;}
-export async function verifySqliteBackup(path:string):Promise<void>{
+function expectedSchema(version:number):string{let value=schemaSignatures.get(version);if(!value){const db=new DatabaseSync(':memory:');try{db.function('now',()=>new Date().toISOString());db.exec(version===SQLITE_LEGACY_USER_VERSION?SQLITE_SCHEMA_V1:SQLITE_SCHEMA);value=signature(db);schemaSignatures.set(version,value);}finally{db.close();}}return value;}
+export interface VerifySqliteBackupOptions{allowLegacyV1?:boolean}
+export async function verifySqliteBackup(path:string,options:VerifySqliteBackupOptions={}):Promise<void>{
   const details=await stat(path);
   if(!details.isFile()||details.size<100)throw new Error('This is not a complete NDA Tracker database backup.');
   const db=new DatabaseSync(path,{readOnly:true});
   try{
     db.exec('PRAGMA trusted_schema=OFF');
-    if(Object.values(db.prepare('PRAGMA application_id').get()!)[0]!==SQLITE_APPLICATION_ID||Object.values(db.prepare('PRAGMA user_version').get()!)[0]!==SQLITE_USER_VERSION)throw new Error('This file is not a supported NDA Tracker database version.');
+    const applicationId=Object.values(db.prepare('PRAGMA application_id').get()!)[0];
+    const version=Number(Object.values(db.prepare('PRAGMA user_version').get()!)[0]);
+    const supported=version===SQLITE_USER_VERSION||(options.allowLegacyV1&&version===SQLITE_LEGACY_USER_VERSION);
+    if(applicationId!==SQLITE_APPLICATION_ID||!supported)throw new Error('This file is not a supported NDA Tracker database version.');
     const check=db.prepare('PRAGMA integrity_check').all();
     if(check.length!==1||Object.values(check[0])[0]!=='ok')throw new Error('The database backup failed its integrity check.');
     const tables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r=>r.name));
-    if(TABLES.some(t=>!tables.has(t)))throw new Error('The file does not contain a complete NDA Tracker workspace.');
-    if(signature(db)!==expectedSchema())throw new Error('This backup has an unsupported or modified database schema.');
-    if(!db.prepare("SELECT 1 FROM schema_migration WHERE name='sqlite-v1'").get())throw new Error('This backup version is not supported.');
+    if((version===SQLITE_USER_VERSION?TABLES:LEGACY_TABLES).some(t=>!tables.has(t)))throw new Error('The file does not contain a complete NDA Tracker workspace.');
+    if(signature(db)!==expectedSchema(version))throw new Error('This backup has an unsupported or modified database schema.');
+    const markers=db.prepare('SELECT name FROM schema_migration ORDER BY name').all().map(row=>row.name);
+    if(version===SQLITE_USER_VERSION
+      ? markers.length!==2||markers[0]!==SQLITE_MIGRATION_V1||markers[1]!==SQLITE_MIGRATION_V2
+      : markers.length!==1||markers[0]!==SQLITE_MIGRATION_V1)throw new Error('This backup version is not supported.');
     if(db.prepare('PRAGMA foreign_key_check').all().length)throw new Error('The database backup has broken document references.');
+    if(version===SQLITE_USER_VERSION){
+      const settings=db.prepare('SELECT revision,filename_fields FROM document_settings WHERE id=1').get();
+      if(!settings||!Number.isSafeInteger(Number(settings.revision))||Number(settings.revision)<0)throw new Error('The database backup has invalid document settings.');
+      try{parseDocumentNamingSettings({filenameFields:JSON.parse(String(settings.filename_fields))});}
+      catch{throw new Error('The database backup has invalid document settings.');}
+    }
     for(const [table,content,checksum] of [['document_artifact','content','checksum'],['contract_signed_file','content','checksum'],['contract_template','content','checksum'],['template_draft','source_content','source_checksum'],['contract_version','template_bytes','template_checksum'],['document_job_item','template_bytes','template_checksum']]){
       for(const row of db.prepare(`SELECT ${checksum} checksum,${content} content FROM ${table}`).iterate()){
         if(createHash('sha256').update(row.content as Uint8Array).digest('hex')!==row.checksum)throw new Error('A document in the backup failed its checksum check.');

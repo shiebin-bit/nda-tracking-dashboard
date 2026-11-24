@@ -1,8 +1,10 @@
 {
   "name": "nda-tracking-dashboard",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0-beta.4",
   "private": true,
-  "engines": { "node": ">=24.11.0" },
+  "engines": {
+    "node": ">=24.11.0"
+  },
   "type": "module",
   "description": "Contract preparation and NDA tracking workspace with versioned Word/PDF generation, signed copies, Excel workflows and Brevo reminders.",
   "repository": {

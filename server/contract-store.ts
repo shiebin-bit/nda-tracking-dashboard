@@ -30,6 +30,7 @@ import type {
   SignedFileSummary,
 } from '../src/contract-types.js';
 import type { RecycledContract } from '../src/recycle-types.js';
+import {formatDocumentFilename,parseDocumentNamingSettings} from '../src/document-settings.js';
 import { withTransaction } from './db.js';
 import { badRequest, conflict, notFound } from './errors.js';
 import { renderContractDocx } from './document-worker.js';
@@ -41,6 +42,27 @@ const MAX_BATCH_SIZE = 100;
 const MAX_BATCH_BYTES = 250 * 1024 * 1024;
 
 type JsonObject = Record<string, unknown>;
+
+function malaysiaDate(value: unknown):string{
+  const date=new Date(String(value));
+  if(Number.isNaN(date.getTime()))throw new Error('Generated document date is invalid.');
+  const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kuala_Lumpur',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date);
+  const part=(type:Intl.DateTimeFormatPartTypes)=>parts.find(entry=>entry.type===type)?.value??'';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+function generatedFileName(row:Record<string,any>):string{
+  const settings=parseDocumentNamingSettings({filenameFields:typeof row.filename_fields==='string'?JSON.parse(row.filename_fields):row.filename_fields});
+  return formatDocumentFilename({
+    type:String(row.document_type??'nda'),
+    supplier:String(row.values_snapshot?.recipient?.name??''),
+    project:String(row.custom_values_snapshot?.project_name??''),
+    date:malaysiaDate(row.version_created_at),
+    reference:String(row.reference_code),
+    ordinal:Number(row.ordinal),
+    extension:row.kind,
+  },settings.filenameFields);
+}
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -417,11 +439,17 @@ async function activeTemplate(
   familyId: string | null = null,
 ): Promise<Record<string, any>> {
   const result = typeof templateId === 'string' && templateId
-    ? await client.query('SELECT * FROM contract_template WHERE id=$1 AND active=true AND document_type=$2', [templateId, documentType])
+    ? await client.query('SELECT * FROM contract_template WHERE id=$1 AND document_type=$2', [templateId, documentType])
     : familyId
       ? await client.query('SELECT * FROM contract_template WHERE family_id=$1 AND active=true AND document_type=$2 ORDER BY created_at DESC,id DESC LIMIT 1', [familyId, documentType])
       : await client.query('SELECT * FROM contract_template WHERE active=true AND document_type=$1 ORDER BY created_at DESC,id DESC LIMIT 1', [documentType]);
   if (!result.rows[0]) throw badRequest('No active contract template is available.', 'template_unavailable');
+  if(familyId && result.rows[0].family_id!==familyId) throw badRequest('This template version belongs to another template. Choose a version of the selected template.', 'template_family_mismatch');
+  if(typeof templateId==='string' && templateId){
+    const selected=result.rows[0];
+    if(!selected.active&&!familyId) throw badRequest('Link this draft to its template before choosing an earlier version.', 'template_unavailable');
+    if(selected.family_id && !(await client.query('SELECT 1 FROM template_family WHERE id=$1 AND active=true',[selected.family_id])).rows[0]) throw badRequest('This template family is unavailable.', 'template_unavailable');
+  }
   return result.rows[0];
 }
 
@@ -548,11 +576,35 @@ export async function seedContractTemplates(pool: Pool, directory = 'templates')
         await client.query('UPDATE template_family SET published_template_id=$2,updated_at=now() WHERE id=$1',
           [family.rows[0].id, existing.rows[0]?.id ?? insertedId]);
       }
+      // Only advance the untouched packaged EOI. A user's published version or
+      // unpublished draft is never silently replaced by an application update.
+      if (key === 'ffm-eoi-v1' && version === '1.1' && family.rows[0].published_template_id) {
+        const current = (await client.query('SELECT * FROM contract_template WHERE id=$1',[family.rows[0].published_template_id])).rows[0];
+        const draft = (await client.query('SELECT * FROM template_draft WHERE family_id=$1',[family.rows[0].id])).rows[0];
+        const original = definitions.find(definition=>isObject(definition)&&definition.key===key&&definition.version==='1.0');
+        if (current?.template_key===key && current.template_version==='1.0' && isObject(original)) {
+          const originalBytes=await readFile(resolve(directory,portableTemplateFileName(String(original.fileName))));
+          const originalChecksum=createHash('sha256').update(originalBytes).digest('hex');
+          const originalSnapshot=inspectDocxTemplate(originalBytes);originalSnapshot.fields=normalizeFieldSchema(original.fields??[]);
+          const untouched=current.checksum===originalChecksum&&stable(current.field_schema)===stable(originalSnapshot.fields)
+            &&(!draft||(draft.version===1&&draft.source_checksum===originalChecksum&&draft.name===current.name&&stable(draft.editor_snapshot)===stable(originalSnapshot)));
+          if(untouched){
+            const nextId=existing.rows[0]?.id??insertedId;
+            await client.query('UPDATE contract_template SET active=false WHERE family_id=$1',[family.rows[0].id]);
+            await client.query('UPDATE contract_template SET active=true WHERE id=$1',[nextId]);
+            await client.query('UPDATE template_family SET published_template_id=$2,updated_at=now() WHERE id=$1',[family.rows[0].id,nextId]);
+            if(draft)await client.query(`UPDATE template_draft SET version=version+1,name=$2,file_name=$3,source_content=$4,source_checksum=$5,
+              editor_snapshot=$6,preview_version=NULL,preview_checksum=NULL,updated_at=now() WHERE id=$1`,
+              [draft.id,name,fileName,content,checksum,JSON.stringify(editorSnapshot)]);
+            family.rows[0].published_template_id=nextId;
+          }
+        }
+      }
       // Keep an editable working copy of each packaged template, without resetting user edits.
       if (!(await client.query('SELECT 1 FROM template_draft WHERE family_id=$1', [family.rows[0].id])).rows[0]) {
         const published = (await client.query('SELECT * FROM contract_template WHERE id=$1',
           [family.rows[0].published_template_id ?? existing.rows[0]?.id ?? insertedId])).rows[0];
-        const snapshot = published.editor_snapshot ?? inspectDocxTemplate(published.content);
+        const snapshot = inspectDocxTemplate(published.content);
         if (published.field_schema?.length) snapshot.fields = published.field_schema;
         await client.query(`INSERT INTO template_draft(id,family_id,version,name,file_name,source_content,source_checksum,editor_snapshot)
           VALUES($1,$2,1,$3,$4,$5,$6,$7)`,
@@ -915,14 +967,29 @@ export class PgContractStore {
     return { job: await this.getJob(result.jobId) };
   }
 
-  async artifact(id: string): Promise<DocumentArtifact & { content: Buffer }> {
+  private async artifactRow(id:string,versionId:string|undefined,includeContent:boolean):Promise<Record<string,any>>{
     const result = await this.pool.query(
-      `SELECT a.*,v.id version_id FROM document_artifact a
-       LEFT JOIN contract_version v ON v.docx_artifact_id=a.id OR v.pdf_artifact_id=a.id
-       WHERE a.id=$1 LIMIT 1`, [id],
+      `SELECT a.id,a.contract_id,a.kind,a.content_type,a.checksum,a.created_at,
+        ${includeContent?'a.content':'length(a.content) size_bytes'},v.id version_id,v.ordinal,
+        v.values_snapshot,v.custom_values_snapshot,v.created_at version_created_at,
+        t.document_type,c.reference_code,s.filename_fields
+       FROM document_artifact a
+       JOIN contract c ON c.id=a.contract_id
+       JOIN contract_version v ON v.contract_id=a.contract_id
+         AND (v.docx_artifact_id=a.id OR v.pdf_artifact_id=a.id)
+       JOIN contract_template t ON t.id=v.template_id
+       JOIN document_settings s ON s.id=1
+       WHERE a.id=$1 ${versionId?'AND v.id=$2':''}
+       ORDER BY v.ordinal DESC,v.id DESC LIMIT 1`, versionId?[id,versionId]:[id],
     );
     const row = result.rows[0];
     if (!row) throw notFound('Document artifact was not found.');
+    row.file_name=generatedFileName(row);
+    return row;
+  }
+
+  async artifact(id: string,versionId?:string): Promise<DocumentArtifact & { content: Buffer }> {
+    const row=await this.artifactRow(id,versionId,true);
     return {
       id: row.id,
       contractId: row.contract_id,
@@ -939,27 +1006,21 @@ export class PgContractStore {
 
   async archivePlan(jobId: string): Promise<{
     job: DocumentJob;
-    entries: { artifactId: string; fileName: string; sizeBytes: number }[];
+    entries: { artifactId: string; versionId: string; fileName: string; sizeBytes: number }[];
     manifest: Buffer;
   }> {
     const job = await this.getJob(jobId);
     const successes = job.items.filter((item) => item.status === 'complete' || item.status === 'partial');
     const requested = successes.flatMap((item) => [item.docxArtifactId, item.pdfArtifactId]
       .filter((id): id is string => Boolean(id))
-      .map((artifactId) => ({ artifactId, contractId: item.contractId })));
-    const artifactIds = requested.map((entry) => entry.artifactId);
-    const metadata = artifactIds.length
-      ? await this.pool.query(
-        `SELECT id,file_name,length(content) size_bytes FROM document_artifact WHERE id IN (${artifactIds.map((_, index) => `$${index + 1}`).join(',')})`,
-        artifactIds,
-      )
-      : { rows: [] as Record<string, any>[] };
-    const byId = new Map(metadata.rows.map((row) => [row.id, row]));
-    const entries = requested.map(({ artifactId, contractId }) => {
-      const artifact = byId.get(artifactId);
-      if (!artifact) throw notFound('A document artifact in this job is unavailable.');
-      return { artifactId, fileName: `${contractId}/${artifact.file_name}`, sizeBytes: artifact.size_bytes as number };
-    });
+      .map((artifactId) => {
+        if(!item.versionId)throw notFound('A generated version in this job is unavailable.');
+        return {artifactId,contractId:item.contractId,versionId:item.versionId};
+      }));
+    const entries=await Promise.all(requested.map(async({artifactId,contractId,versionId})=>{
+      const artifact=await this.artifactRow(artifactId,versionId,false);
+      return {artifactId,versionId,fileName:`${contractId}/${artifact.file_name}`,sizeBytes:Number(artifact.size_bytes)};
+    }));
     const manifest = Buffer.from(JSON.stringify({ job, generatedAt: new Date().toISOString() }, null, 2));
     const total = manifest.length + entries.reduce((sum, entry) => sum + entry.sizeBytes, 0);
     if (total > MAX_BATCH_BYTES) throw badRequest('The archive exceeds 250 MiB.', 'archive_too_large');

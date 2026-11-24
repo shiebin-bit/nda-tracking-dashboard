@@ -1,0 +1,15 @@
+.searchable-select{position:relative;min-width:0;width:100%;font-weight:400}
+.searchable-select-control{position:relative;display:flex;align-items:center}
+.searchable-select-control input{width:100%;min-width:0;padding-right:88px!important;text-overflow:ellipsis}
+.searchable-select-control button{position:absolute;top:50%;transform:translateY(-50%);padding:6px;border:0;background:transparent;color:var(--muted,#64726e);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.searchable-select-control button{width:40px;min-height:40px;padding:8px}.searchable-select-clear{right:40px}.searchable-select-toggle{right:0}
+.searchable-select-control button:disabled{cursor:default;opacity:.5}
+.searchable-select-popup{position:absolute;z-index:60;top:calc(100% + 5px);left:0;right:0;min-width:min(300px,100%);background:var(--surface,#fff);border:1px solid var(--border,#d3dcd7);box-shadow:0 8px 24px #23372e22;border-radius:5px;padding:4px}
+.searchable-select-popup ul{list-style:none;margin:0;padding:0;max-height:250px;overflow-y:auto;overscroll-behavior:contain}
+.searchable-select-popup li{padding:10px 11px;line-height:1.4;cursor:pointer;overflow-wrap:anywhere;border-radius:3px}
+.searchable-select-popup li.active{background:#edf2ee}.searchable-select-popup li[aria-selected=true]{font-weight:650;color:#215847}
+.searchable-select-popup p{padding:10px;font-size:13px;margin:0}.searchable-select-popup small{display:block;padding:8px 10px 3px;color:#64726e;font-size:11px}
+.searchable-select-control input:focus-visible,.searchable-select-control button:focus-visible{outline:2px solid #557c69;outline-offset:2px}
+.contract-list-filters>.field{min-width:175px;max-width:260px;flex:1;gap:7px;font-size:10px;color:var(--muted);font-weight:600}.contract-list-filters .searchable-select-control input{min-height:40px;font-size:12px}.contract-list-filters .searchable-select-popup{font-size:12px;color:var(--text);font-weight:400}
+@media(max-width:600px){.searchable-select-popup li{min-height:44px}.searchable-select-popup ul{max-height:210px}.searchable-select-control button{min-height:44px;width:44px}.searchable-select-clear{right:44px}.searchable-select-control input{min-height:44px;padding-right:92px!important}}
+@media(max-width:700px){.contract-list-filters>.field{min-width:0;max-width:none;flex-basis:calc(50% - 10px)}}

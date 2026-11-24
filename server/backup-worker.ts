@@ -12,7 +12,7 @@ const RETRY_MS = 15 * 60_000;
 const HEARTBEAT_MS = 30_000;
 const LOCK_STALE_MS = 120_000;
 export const REQUIRED_TABLES = [
-  'workspace','nda_record','history_event','restore_archive','email_job','email_delivery','email_request','schema_migration',
+  'workspace','document_settings','nda_record','history_event','restore_archive','email_job','email_delivery','email_request','schema_migration',
   'supplier','project','template_family','template_draft',
   'contract','contract_template','contract_version','contract_activity','contract_request',
   'document_job','document_job_item','document_artifact','contract_signed_file',

@@ -30,6 +30,7 @@ desktop-settings.json
 *.docx
 !templates/ffm-nda-v1.docx
 !templates/ffm-eoi-v1.docx
+!templates/ffm-eoi-v1.1.docx
 *.pem
 *.key
 .DS_Store

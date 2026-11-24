@@ -198,3 +198,33 @@ Settings and delivery responses include `ccEmails: string[]`, with up to ten add
 Agreement and document API resources include `reference` (`AGR-…` / `DOC-…`). They are allocated by the server, unique and immutable; UUID paths and Excel columns remain unchanged. Supplier detail resources include references and document recipient names.
 
 `POST /suppliers/:id/assignments` accepts `{agreements: [{id, expectedVersion}], documents: [{id, expectedVersion}]}`. Include all related active documents/tracking agreements explicitly; omitted related items return `409 related_items_required`. Changes apply in one transaction; stale versions or recycled targets abort the group. The operation changes supplier associations and records audit events without editing document bytes, contract values, agreement fields or reminder settings. Already assigned targets are no-ops, including a response-lost replay.
+
+
+## Document naming settings and template history
+
+- `GET /api/document-settings` returns `{revision, settings: {filenameFields}}`.
+- `PUT /api/document-settings` accepts `{expectedRevision, settings: {filenameFields}}`. Fields are a unique ordered subset of `type`, `supplier`, `project`, `date`; an empty subset is valid. The reference/version suffix is mandatory. Stale updates return `409 revision_conflict`.
+- `GET /api/document-artifacts/:id/content?download=1&versionId=<id>` binds naming to that exact generated version. The version must reference the artifact. This matters when retry versions share a Word artifact. The response supplies UTF-8 `Content-Disposition` and an ASCII fallback; bytes remain unchanged.
+- `GET /api/contract-templates/families/:id/versions` returns `{templates}` including earlier inactive published versions.
+- `GET /api/contract-templates/:id/source?download=1` reads immutable template bytes.
+- `POST /api/contract-templates/:id/preview` accepts optional sample `values`/`customValues` and returns a PDF without changing any draft preview state.
+- `POST /api/contract-templates/families/:id/draft` accepts `{requestId, templateId, expectedVersion, confirmReplace}`. Existing drafts require their revision and explicit `confirmReplace: true`; a missing draft requires `expectedVersion: null`. Replays are idempotent. A reset invalidates preview readiness.
+- Draft preview requests may include `expectedVersion`; current UI always supplies it. A concurrent edit invalidates the preview even for older clients.
+- Template field definitions optionally contain `appearance: {fontWeight: "bold" | "normal"}`. Supplier and project display IDs remain forbidden generation sources.
+
+SQLite workspace version 2 adds document naming preferences and the published-template delete guard. Upgrade validates the exact v1 schema and retains a verified pre-upgrade backup. Complete restore explicitly accepts verified v1 backups, upgrades a disposable staging copy, verifies v2 and pauses automatic reminders before replacement. The selected backup file is never modified.
+
+### Controlled Word structure edits
+
+DOCX `editorSnapshot` optionally includes `wordStructure.rows` (server-derived row metadata) and `wordOperations`. Each operation has a unique `id` and one of these shapes:
+
+```typescript
+{type: 'insert-paragraph', anchorId: string, position: 'before' | 'after', text: string}
+{type: 'delete-paragraph', targetId: string}
+{type: 'insert-table-row', anchorRowId: string, position: 'before' | 'after', cells: string[]}
+{type: 'delete-table-row', targetRowId: string}
+```
+
+Anchors refer to the immutable draft source. Inserted text remains in operations rather than being submitted as invented source regions. Every original region must be submitted exactly once, including deleted regions. Server inspection supplies protection and row metadata; client flags do not authorize an edit. Only eligible body paragraphs and simple top-level rows may be changed; protected content and deletion of the last original row are rejected. Structural requests use the existing draft PATCH, revision checks and preview/publish flow. Legacy snapshots without operations remain compatible.
+
+Publishing bakes operations into new immutable DOCX bytes and rebases the published snapshot. Copying a published version into a working draft inspects those bytes with no pending operations. This JSON extension requires no additional SQL migration.

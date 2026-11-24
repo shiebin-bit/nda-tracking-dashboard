@@ -19,16 +19,23 @@ export async function contractRequest<T>(path:string,body?:unknown,method=body?'
   if(!response.ok)throw new ContractApiError(data?.error?.message||`Request failed (${response.status}).`,response.status,data?.error?.code,data?.error?.details);
   return data as T;
 }
-export async function templatePreview(id:string,body:{values?:ContractValues;customValues?:Record<string,string>}={}):Promise<Blob>{
+export async function templatePreview(id:string,body:{expectedVersion?:number;values?:ContractValues;customValues?:Record<string,string>}={}):Promise<Blob>{
   const response=await fetch(`/api/contract-template-drafts/${encodeURIComponent(id)}/preview`,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(!response.ok){const data=await response.json().catch(()=>null);throw new ContractApiError(data?.error?.message||`Preview failed (${response.status}).`,response.status,data?.error?.code,data?.error?.details);}
   return response.blob();
+}
+export async function templateVersionPreview(id:string):Promise<Blob>{
+  const response=await fetch(`/api/contract-templates/${encodeURIComponent(id)}/preview`,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'});
+  if(!response.ok){const data=await response.json().catch(()=>null);throw new ContractApiError(data?.error?.message||`Preview failed (${response.status}).`,response.status,data?.error?.code,data?.error?.details);}return response.blob();
 }
 export const templateDraftSourceUrl=(id:string)=>`/api/contract-template-drafts/${encodeURIComponent(id)}/source`;
 export const contractsApi={
   list:()=>contractRequest<{contracts:ContractListItem[]}>('/contracts'),
   templates:()=>contractRequest<{templates:ContractTemplate[]}>('/contract-templates'),
   templateFamilies:()=>contractRequest<{families:TemplateFamily[]}>('/contract-templates/families'),
+  templateVersions:(familyId:string)=>contractRequest<{templates:ContractTemplate[]}>(`/contract-templates/families/${encodeURIComponent(familyId)}/versions`),
+  templateVersionSource:(id:string)=>`/api/contract-templates/${encodeURIComponent(id)}/source?download=1`,
+  createTemplateVersionDraft:(familyId:string,input:{requestId:string;templateId:string;expectedVersion:number|null;confirmReplace?:boolean})=>contractRequest<{draft:TemplateDraft}>(`/contract-templates/families/${encodeURIComponent(familyId)}/draft`,input),
   templateDrafts:()=>contractRequest<{drafts:TemplateDraft[]}>('/contract-template-drafts'),
   importTemplate:async(file:File,input:{requestId:string;name:string;documentType:DocumentType;familyId?:string;expectedVersion?:number})=>{
     const form=new FormData();form.append('file',file);form.append('requestId',input.requestId);form.append('key',`template-${input.requestId}`);form.append('name',input.name);form.append('documentType',input.documentType);
@@ -46,7 +53,7 @@ export const contractsApi={
   duplicate:(id:string,requestId:string)=>contractRequest<{contract:Contract}>(`/contracts/${id}/duplicate`,{requestId}),
   fromRecord:(id:string,requestId:string)=>contractRequest<{contract:Contract}>(`/records/${id}/contract-draft`,{requestId}),
   refresh:(id:string,expectedVersion:number,requestId:string)=>contractRequest<{contract:Contract}>(`/contracts/${id}/refresh-from-record`,{expectedVersion,requestId}),
-  generate:(id:string,expectedVersion:number,requestId:string)=>contractRequest<{job:DocumentJob}>(`/contracts/${id}/generations`,{expectedVersion,requestId}),
+  generate:(id:string,expectedVersion:number,requestId:string,templateId?:string)=>contractRequest<{job:DocumentJob}>(`/contracts/${id}/generations`,{expectedVersion,requestId,...(templateId?{templateId}:{})}),
   batch:(contracts:{id:string;expectedVersion:number}[],requestId:string)=>contractRequest<{job:DocumentJob}>('/document-jobs/batch',{contracts,requestId}),
   jobs:()=>contractRequest<{jobs:DocumentJob[]}>('/document-jobs'),
   job:(id:string)=>contractRequest<{job:DocumentJob}>(`/document-jobs/${id}`),
@@ -63,5 +70,5 @@ export const contractsApi={
   },
   sign:(id:string,body:{requestId:string;expectedVersion:number;versionId:string;signedFileId:string;agreementDate?:string;pic?:string})=>contractRequest<{contract:Contract;recordId:string|null;revision:string}>(`/contracts/${id}/confirm-signed`,body),
 };
-export const artifactUrl=(id:string,download=false)=>`/api/document-artifacts/${encodeURIComponent(id)}/content${download?'?download=1':''}`;
+export const artifactUrl=(id:string,download=false,versionId?:string)=>{const query=new URLSearchParams();if(download)query.set('download','1');if(versionId)query.set('versionId',versionId);return `/api/document-artifacts/${encodeURIComponent(id)}/content${query.size?'?'+query.toString():''}`;};
 export const signedFileUrl=(id:string,download=false)=>`/api/contract-signed-files/${encodeURIComponent(id)}/content${download?'?download=1':''}`;

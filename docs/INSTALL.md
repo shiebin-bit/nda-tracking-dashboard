@@ -1,10 +1,10 @@
 # NDA Tracker — Windows Installation Guide
 
-This guide applies to the **v0.2.0-beta.1 Windows x64 preview**.
+This guide applies to the **v0.2.0-beta.4 Windows x64 preview**.
 
 ## Install and open
 
-1. Download `NDA-Tracker-Setup-0.2.0-beta.1-x64.exe` from the [GitHub release](https://github.com/shiebin-bit/nda-tracking-dashboard/releases/tag/v0.2.0-beta.1).
+1. Download `NDA-Tracker-Setup-0.2.0-beta.4-x64.exe` and its SHA-256 file from [GitHub Releases](https://github.com/shiebin-bit/nda-tracking-dashboard/releases/tag/v0.2.0-beta.4).
 2. Run the installer, choose an installation folder and finish setup.
 3. Open **NDA Tracker** from the desktop shortcut or Start menu.
 

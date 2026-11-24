@@ -40,6 +40,9 @@ export interface TemplateFieldDefinition {
   type: 'text' | 'number' | 'date';
   required: boolean;
   source: string | null;
+  appearance?: {
+    fontWeight: 'normal' | 'bold';
+  };
 }
 
 export interface PdfFieldPlacement {
@@ -54,10 +57,39 @@ export interface PdfFieldPlacement {
   align: 'left' | 'center' | 'right';
 }
 
+export interface TemplateRegion {
+  id: string;
+  kind: 'paragraph' | 'table-cell';
+  text: string;
+  readOnly: boolean;
+  structureEditable?: boolean;
+  structureReason?: string;
+  rowId?: string;
+  cellIndex?: number;
+}
+
+export interface WordTableRow {
+  id: string;
+  tableId: string;
+  regionIds: string[];
+  cellCount: number;
+  readOnly: boolean;
+  reason?: string;
+  isHeader?: boolean;
+}
+
+export type WordStructureOperation =
+  | { id: string; type: 'insert-paragraph'; anchorId: string; position: 'before' | 'after'; text: string }
+  | { id: string; type: 'delete-paragraph'; targetId: string }
+  | { id: string; type: 'insert-table-row'; anchorRowId: string; position: 'before' | 'after'; cells: string[] }
+  | { id: string; type: 'delete-table-row'; targetRowId: string };
+
 export interface TemplateEditorSnapshot {
   format: TemplateFormat;
   fields: TemplateFieldDefinition[];
-  regions?: { id: string; kind: 'paragraph' | 'table-cell'; text: string; readOnly: boolean }[];
+  regions?: TemplateRegion[];
+  wordStructure?: { rows: WordTableRow[] };
+  wordOperations?: WordStructureOperation[];
   placements?: PdfFieldPlacement[];
   pages?: { page: number; width: number; height: number; rotation: number }[];
   warnings?: string[];

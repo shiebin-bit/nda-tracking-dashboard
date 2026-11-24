@@ -1,21 +1,39 @@
 name: Build Windows desktop installer
+run-name: Windows installer ${{ inputs.release_tag || github.ref_name }}
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft release tag to build and attach assets to (optional)
+        required: false
+        type: string
 permissions:
   contents: read
 jobs:
   installer:
+    permissions:
+      contents: write
     runs-on: windows-latest
     timeout-minutes: 45
     env:
       ELECTRON_BUILDER_COMPRESSION_LEVEL: '3'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Check release version
+        if: inputs.release_tag != ''
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:RELEASE_TAG -ne "v$version") { throw 'The release tag does not match package.json.' }
       - run: node node_modules/electron/install.js
       - run: npm test
       - run: npm run test:integration
@@ -37,3 +55,16 @@ jobs:
             release/*Setup*.exe
             release/*.sha256
           if-no-files-found: error
+      - name: Attach installer to draft release
+        if: inputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $release = gh release view $env:RELEASE_TAG --json isDraft | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $release.isDraft) { throw 'An existing draft release is required.' }
+          $assets = @(Get-ChildItem -LiteralPath release -File | Where-Object { $_.Name -like '*Setup*.exe' -or $_.Name -like '*.sha256' } | ForEach-Object { $_.FullName })
+          if ($assets.Count -lt 2) { throw 'Installer and checksum are required.' }
+          gh release upload $env:RELEASE_TAG @assets
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }

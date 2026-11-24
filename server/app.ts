@@ -17,6 +17,8 @@ import { PgSupplierStore } from './supplier-store.js';
 import { PgTemplateStore } from './template-store.js';
 import { parseTemplateUpload } from './template-upload.js';
 import type { DocumentType } from '../src/contract-types.js';
+import { DocumentSettingsStore } from './document-settings.js';
+import type { DocumentNamingSettings } from '../src/document-settings.js';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -44,7 +46,7 @@ function binary(
   response.writeHead(status, {
     'Content-Type': contentType,
     'Content-Length': content.length,
-    'Content-Disposition': `${disposition}; filename="${safeDownloadName(fileName)}"`,
+    'Content-Disposition': `${disposition}; filename="${safeDownloadName(fileName)}"; filename*=UTF-8''${encodeURIComponent(fileName).replace(/['()*]/g,char=>`%${char.charCodeAt(0).toString(16).toUpperCase()}`)}`,
     'Cache-Control': 'private, no-store',
   });
   response.end(content);
@@ -66,7 +68,7 @@ async function streamArchive(response: ServerResponse, store: PgContractStore, j
   archive.outputStream.pipe(response);
   for (const entry of plan.entries) {
     const source = Readable.from((async function* () {
-      yield (await store.artifact(entry.artifactId)).content;
+      yield (await store.artifact(entry.artifactId,entry.versionId)).content;
     })());
     archive.addReadStream(source, entry.fileName, { size: entry.sizeBytes });
   }
@@ -136,6 +138,7 @@ export function createHandler(pool: Pool, config: ServerConfig, email = new Emai
   const contracts = new PgContractStore(pool);
   const suppliers = new PgSupplierStore(pool);
   const templates = new PgTemplateStore(pool,config.converterUrl);
+  const documentSettings = new DocumentSettingsStore(pool);
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const started = Date.now();
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -157,6 +160,12 @@ export function createHandler(pool: Pool, config: ServerConfig, email = new Emai
         let result: unknown;
         let status = 200;
         if (url.pathname === '/api/state' && method === 'GET') result = await store.state();
+        else if (url.pathname === '/api/document-settings' && method === 'GET') result = await documentSettings.get();
+        else if (url.pathname === '/api/document-settings' && method === 'PUT') {
+          const input=await body(request,config.bodyLimitBytes) as {expectedRevision?:number;settings?:DocumentNamingSettings}|null;
+          if(!input||typeof input!=='object'||Array.isArray(input))throw badRequest('Document settings must be an object.');
+          result=await documentSettings.update(input.expectedRevision!,input.settings!);
+        }
         else if (url.pathname === '/api/suppliers' && method === 'GET') result = { suppliers: await suppliers.listSuppliers() };
         else if (url.pathname === '/api/suppliers' && method === 'POST') {
           result = { supplier: await suppliers.createSupplier(await body(request,config.bodyLimitBytes)) }; status = 201;
@@ -208,6 +217,10 @@ export function createHandler(pool: Pool, config: ServerConfig, email = new Emai
           const templatePreview = /^\/api\/contract-template-drafts\/([^/]+)\/preview$/.exec(url.pathname);
           const templatePublish = /^\/api\/contract-template-drafts\/([^/]+)\/publish$/.exec(url.pathname);
           const templateSource = /^\/api\/contract-template-drafts\/([^/]+)\/source$/.exec(url.pathname);
+          const templateVersions = /^\/api\/contract-templates\/families\/([^/]+)\/versions$/.exec(url.pathname);
+          const templateVersionDraft = /^\/api\/contract-templates\/families\/([^/]+)\/draft$/.exec(url.pathname);
+          const publishedTemplatePreview = /^\/api\/contract-templates\/([^/]+)\/preview$/.exec(url.pathname);
+          const publishedTemplateSource = /^\/api\/contract-templates\/([^/]+)\/source$/.exec(url.pathname);
           const renew = /^\/api\/records\/([^/]+)\/renew$/.exec(url.pathname);
           const followUp = /^\/api\/records\/([^/]+)\/follow-up-notes$/.exec(url.pathname);
           const update = /^\/api\/records\/([^/]+)$/.exec(url.pathname);
@@ -231,6 +244,20 @@ export function createHandler(pool: Pool, config: ServerConfig, email = new Emai
           else if (supplierAssignments && method === 'POST') result = await suppliers.assignItems(decodeURIComponent(supplierAssignments[1]),await body(request,config.bodyLimitBytes));
           else if (project && method === 'PATCH') result = { project: await suppliers.updateProject(decodeURIComponent(project[1]),await body(request,config.bodyLimitBytes)) };
           else if (recordSupplier && method === 'PATCH') result = await store.linkSupplier(decodeURIComponent(recordSupplier[1]),await body(request,config.bodyLimitBytes));
+          else if (templateVersions && method === 'GET') result={templates:await templates.listPublishedVersions(decodeURIComponent(templateVersions[1]))};
+          else if (templateVersionDraft && method === 'POST') {
+            result=await templates.resetDraftFromPublished(decodeURIComponent(templateVersionDraft[1]),await body(request,config.bodyLimitBytes));status=201;
+          }
+          else if (publishedTemplatePreview && method === 'POST') {
+            const preview=await templates.previewPublished(decodeURIComponent(publishedTemplatePreview[1]),await body(request,config.bodyLimitBytes));
+            response.setHeader('Content-Security-Policy',"default-src 'none'; frame-ancestors 'self'");
+            return binary(response,200,preview.content,preview.contentType,preview.fileName,'inline');
+          }
+          else if (publishedTemplateSource && method === 'GET') {
+            const source=await templates.sourcePublished(decodeURIComponent(publishedTemplateSource[1]));
+            response.setHeader('Content-Security-Policy',"default-src 'none'; frame-ancestors 'self'");
+            return binary(response,200,source.content,source.contentType,source.fileName,url.searchParams.get('download')==='1'?'attachment':'inline');
+          }
           else if (templateDraft && method === 'PATCH') result = await templates.updateDraft(decodeURIComponent(templateDraft[1]),await body(request,config.bodyLimitBytes));
           else if (templatePublish && method === 'POST') {
             result=await templates.publishDraft(decodeURIComponent(templatePublish[1]),await body(request,config.bodyLimitBytes)); status=201;
@@ -270,7 +297,7 @@ export function createHandler(pool: Pool, config: ServerConfig, email = new Emai
             return streamArchive(response,contracts,decodeURIComponent(jobArchive[1]));
           }
           else if (artifactContent && method === 'GET') {
-            const artifact = await contracts.artifact(decodeURIComponent(artifactContent[1]));
+            const artifact = await contracts.artifact(decodeURIComponent(artifactContent[1]),url.searchParams.get('versionId')??undefined);
             if (artifact.kind === 'pdf') response.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'self'");
             const disposition = url.searchParams.get('download') === '1' ? 'attachment' : 'inline';
             return binary(response,200,artifact.content,artifact.contentType,artifact.fileName,disposition);

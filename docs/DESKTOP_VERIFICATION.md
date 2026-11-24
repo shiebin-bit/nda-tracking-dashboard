@@ -1,5 +1,17 @@
 # Windows desktop preview verification
 
+## v0.2.0-beta.4 — 24 November 2026
+
+- 179 unit tests, 66 disposable SQLite integration tests and the client/server production build pass.
+- Browser QA checks new paragraph/row editing, deletion after text edits, last-occurrence field cleanup, continuous-typing Undo, save, real local PDF preview, publication and copying a baked version without applying operations twice. Desktop and 390px layouts have no horizontal overflow.
+- Legacy source paragraph IDs remain stable across self-closing paragraphs and nested textboxes, preserving saved draft edits. Protected ranges, revision properties, comments, notes, section paragraphs and complex tables reject structural operations.
+- Independent focused review and 32 focused tests passed after correcting busy-state mutation, Undo grouping and source-ID compatibility issues.
+- Existing immutable template, generated and signed bytes are protected by regression tests. Complete live SQLite backup was verified before updating; personal content and credentials are excluded from source/release assets.
+- Actual converter output was inspected: synthetic structural template (1 page), personal one-page EOI (1 page), and existing NDA with minimal sample values (11 pages). The NDA source retains an inherited blank numbered page before its Schedule for that sample; existing published template bytes were not rewritten. Check final pagination with actual data.
+- No additional real mail was sent. Brevo's unrecognized-IP restriction is outside this change. Clean Windows VM, company policy and physical printer testing remain outstanding.
+
+The earlier verification record below describes the original beta.1 package.
+
 Build: `0.2.0-beta.1`, Windows x64, 19 November 2026.
 
 ## Verified
